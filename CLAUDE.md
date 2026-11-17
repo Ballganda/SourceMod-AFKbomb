@@ -38,6 +38,10 @@ for Counter-Strike: Source. Goal: verify it still works on the current game buil
   game restarts it a few seconds later under whatever is running; set `mp_ignore_round_win_conditions 1`.
 - Fake clients spawned on neighbouring spawn points nudge each other and pick up each other's dropped bombs;
   place them on far-apart spawn points for repeatable results.
+- Per-instance config: `scripting/include/instance_config.inc` writes `configs/<plugin>.cfg` under the SourceMod
+  path (never game `cfg`). A second SourceMod base path is testable: copy `addons\sourcemod` to
+  `addons\sourcemod_b` (`Copy-Item -Recurse`), start srcds with `+sm_basepath addons/sourcemod_b`; the file and
+  the `L*.log` then appear only under `sourcemod_b`. Delete the copy afterwards.
 - `LogToFileEx` paths are relative to the game dir; use `BuildPath(Path_SM, ...)` for `logs/`.
 
 ## SourcePawn notes

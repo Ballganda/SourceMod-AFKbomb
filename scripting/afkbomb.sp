@@ -25,6 +25,7 @@
 #include <sdktools>
 #include <sdkhooks>
 #include <cstrike>
+#include <instance_config> //settings file in this server's own SourceMod folder (not the shared game cfg folder)
 
 #define PLUGIN_VERSION "1.5.0"
 
@@ -108,6 +109,16 @@ public OnPluginStart()
 	"What to do when someone is considered afk after the beginning of a round. 1=Drop. 0=Give to random player (not recommended since it could be exploited). Def. 1.",
 		FCVAR_PLUGIN | FCVAR_NOTIFY, true, 0.0, true, 1.0 );
 
+	//Settings file : every cvar but the version one (applied in OnConfigsExecuted)
+	InstCfg_Add( g_afkBomb );
+	InstCfg_Add( g_afkBomb_addFreeze );
+	InstCfg_Add( g_afkBomb_action );
+	InstCfg_Add( g_afkBomb_displayMsg );
+	InstCfg_Add( g_afkBomb_lateCheckNumber );
+	InstCfg_Add( g_afkBomb_lateCheckDelay );
+	InstCfg_Add( g_afkBomb_lateCheckAction );
+	InstCfg_Ensure();
+
 	//Hooks on events
 	HookEvent( "round_start", Event_RoundStart );
 	HookEvent( "round_freeze_end", Event_FreezeEnd ); //Players are judged only from here on
@@ -123,6 +134,12 @@ public OnPluginStart()
 	for ( new i = 1; i <= MaxClients; ++i )
 		if ( IsClientInGame( i ) )
 			SDKHook( i, SDKHook_WeaponCanUse, OnWeaponCanUse );
+}
+
+//Every map : the settings file wins over whatever was set before
+public OnConfigsExecuted()
+{
+	InstCfg_Apply();
 }
 
 public OnClientPutInServer( client )

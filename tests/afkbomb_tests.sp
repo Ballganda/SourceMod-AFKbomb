@@ -19,6 +19,7 @@
 #include <sourcemod>
 #include <sdktools>
 #include <cstrike>
+#include <instance_config> // also exercised directly, through this plugin's own cvars (C_CFG_LONG_VALUE)
 
 #define PLUGIN_VERSION "1.1.0"
 #define MAX_FAKE 4
@@ -76,9 +77,16 @@ enum
 	C_PLANT_STOPS_LATE,
 	C_PLANT_NEXT_ROUND,
 	C_PLANT_PENDING,
+	C_CFG_CREATED,      // per-instance config include (issue #12)
+	C_CFG_ENTRIES,
+	C_CFG_APPLIED,
+	C_CFG_APPEND,
+	C_CFG_FOREIGN,
+	C_CFG_LONG_VALUE,
 	C_HUMAN_DROP,     // the last two need a real client connected; skipped otherwise
 	C_HUMAN_GIVE_MSG,
 	C_HUMAN_FIRST,
+	C_CFG_MAP_CHANGE, // changes the map, so it runs last
 	NUM_CASES
 };
 
@@ -109,11 +117,20 @@ int g_sayCount;        // say_team messages from the carrier during the case
 char g_lastSay[192];
 
 float g_origFreezetime;
+bool g_mapChanging;    // C_CFG_MAP_CHANGE has issued its changelevel
 bool g_forceButton;    // OnPlayerRunCmd presses IN_FORWARD for the carrier
 ConVar g_cvAutorun;
 char g_logPath[PLATFORM_MAX_PATH];
 ConVar g_cvInjectError;
 ConVar g_cvWaitClient;
+
+char g_cfgA[16384];    // config file contents under inspection
+char g_cfgB[16384];
+char g_cfgOld[512];    // what a test wrote into the config
+char g_cfgTypo[64];    // a cvar name that exists nowhere
+ConVar g_cvTestLong;   // this plugin's own cvars for the include
+ConVar g_cvTestSpaced;
+ConVar g_cvTestBare;
 
 public Plugin myinfo =
 {
@@ -164,6 +181,13 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_PLANT_STOPS_LATE], NAME_LEN, "no late check runs after the bomb is planted");
 	strcopy(g_caseNames[C_PLANT_NEXT_ROUND], NAME_LEN, "checks resume in the round after a plant");
 	strcopy(g_caseNames[C_PLANT_PENDING], NAME_LEN, "plant while a check is pending raises no error");
+	strcopy(g_caseNames[C_CFG_CREATED], NAME_LEN, "config appears in SourceMod configs, nothing in game cfg");
+	strcopy(g_caseNames[C_CFG_ENTRIES], NAME_LEN, "config has one commented entry per cvar, no version, deprecated marked");
+	strcopy(g_caseNames[C_CFG_APPLIED], NAME_LEN, "config values applied: comments, blanks, quotes, CRLF handled");
+	strcopy(g_caseNames[C_CFG_APPEND], NAME_LEN, "missing entries appended, existing lines unchanged");
+	strcopy(g_caseNames[C_CFG_FOREIGN], NAME_LEN, "cvar the plugin does not own is not applied, reported once");
+	strcopy(g_caseNames[C_CFG_LONG_VALUE], NAME_LEN, "long quoted value and quoted spaces are not truncated");
+	strcopy(g_caseNames[C_CFG_MAP_CHANGE], NAME_LEN, "edited value applied after map change, unknown reported once");
 	strcopy(g_caseNames[C_CLAMP], NAME_LEN, "cvar bounds clamped");
 	strcopy(g_caseNames[C_DROP_STILL], NAME_LEN, "stationary carrier loses bomb");
 	strcopy(g_caseNames[C_DROP_MOVING], NAME_LEN, "moved carrier keeps bomb");
@@ -202,6 +226,14 @@ public void OnPluginStart()
 		if (id != INVALID_MESSAGE_ID)
 			HookUserMessage(id, OnChatMsg);
 	}
+
+	g_cvTestLong = CreateConVar("afkbomb_test_long", "short", "A string cvar for the config include test.");
+	g_cvTestSpaced = CreateConVar("afkbomb_test_spaced", "a b", "A string cvar with spaces.");
+	g_cvTestBare = CreateConVar("afkbomb_test_bare", "x", "A string cvar read from an unquoted value.");
+	InstCfg_Add(g_cvTestLong);
+	InstCfg_Add(g_cvTestSpaced);
+	InstCfg_Add(g_cvTestBare);
+	InstCfg_Ensure(); // configs/afkbomb_tests.cfg; applied only by the case that tests it
 
 	AddCommandListener(OnSayTeam, "say_team");
 	HookEvent("round_start", OnRoundStartSeen, EventHookMode_PostNoCopy);
@@ -289,6 +321,15 @@ public void OnMapStart()
 {
 	if (g_cvAutorun.BoolValue && !g_running)
 		CreateTimer(15.0, Timer_Autorun, _, TIMER_FLAG_NO_MAPCHANGE);
+}
+
+public void OnConfigsExecuted()
+{
+	if (g_mapChanging && g_caseActive && g_curCase == C_CFG_MAP_CHANGE)
+	{
+		g_mapChanging = false;
+		Schedule(1.0, g_curCase, 3);
+	}
 }
 
 public Action Timer_Autorun(Handle timer)
@@ -433,6 +474,89 @@ void StartCase(int c)
 				&& GetCvarFloat("afkbomb_latecheckdelay") == 1.0
 				&& GetCvarInt("afkbomb_latecheckaction") == 1;
 			EndCase(ok, ok ? "all out-of-range values clamped" : "a cvar was not clamped to its bounds");
+		}
+
+		case C_CFG_CREATED:
+		{
+			char path[PLATFORM_MAX_PATH];
+			CfgPath("afkbomb", path, sizeof(path));
+			DeleteFile(path);
+			ServerCommand("sm plugins reload afkbomb");
+			Schedule(1.5, c, 1);
+		}
+
+		case C_CFG_ENTRIES:
+		{
+			char path[PLATFORM_MAX_PATH];
+			CfgPath("afkbomb", path, sizeof(path));
+			DeleteFile(path);
+			ServerCommand("sm plugins reload afkbomb");
+			Schedule(1.5, c, 1);
+		}
+
+		case C_CFG_APPLIED:
+		{
+			char path[PLATFORM_MAX_PATH];
+			CfgPath("afkbomb", path, sizeof(path));
+			CfgWrite(path, "// custom settings\r\n; a semicolon comment\r\n\r\n   \r\nafkbomb \"3\"\r\n\tafkbomb_latecheck   4  \r\n//afkbomb_action 1\r\n;afkbomb_latecheckaction 0\r\nafkbomb_msg \"0\"\r\nafkbomb_latecheckdelay \"7.5\" // trailing\r\n");
+			ServerCommand("sm plugins reload afkbomb");
+			Schedule(1.5, c, 1);
+		}
+
+		case C_CFG_APPEND:
+		{
+			char path[PLATFORM_MAX_PATH];
+			CfgPath("afkbomb", path, sizeof(path));
+			strcopy(g_cfgOld, sizeof(g_cfgOld), "// my notes\nafkbomb \"5\"\nafkbomb_action \"1\"   \n// last line, no newline after it");
+			CfgWrite(path, g_cfgOld);
+			ServerCommand("sm plugins reload afkbomb");
+			Schedule(1.5, c, 1);
+		}
+
+		case C_CFG_FOREIGN:
+		{
+			char path[PLATFORM_MAX_PATH], text[256];
+			CfgPath("afkbomb", path, sizeof(path));
+			Format(g_cfgTypo, sizeof(g_cfgTypo), "afkbomb_typo_%d", GetTime());
+			Format(text, sizeof(text), "mp_freezetime 99\n%s 1\nafkbomb 4\n", g_cfgTypo);
+			CfgWrite(path, text);
+			ServerCommand("sm plugins reload afkbomb");
+			Schedule(1.5, c, 1);
+		}
+
+		case C_CFG_LONG_VALUE:
+		{
+			// this plugin's own string cvars, read through the same include; 2000 characters is far beyond any chat message
+			char path[PLATFORM_MAX_PATH], big[2100];
+			CfgPath("afkbomb_tests", path, sizeof(path));
+			for (int i = 0; i < 2000; i++)
+				big[i] = view_as<char>('a' + (i % 26));
+			big[2000] = '\0';
+			File f = OpenFile(path, "wb");
+			if (f == null) { EndCase(false, "cannot write the test plugin's config"); return; }
+			f.WriteString("// long and spaced values\nafkbomb_test_long \"", false);
+			f.WriteString(big, false);
+			f.WriteString("\" // trailing\nafkbomb_test_spaced \"hello  big world\"\nafkbomb_test_bare unquoted\n", false);
+			delete f;
+			InstCfg_Apply();
+			char got[2100];
+			g_cvTestLong.GetString(got, sizeof(got));
+			if (!StrEqual(got, big)) { EndCase(false, "the long quoted value was truncated or altered"); return; }
+			g_cvTestSpaced.GetString(got, sizeof(got));
+			if (!StrEqual(got, "hello  big world")) { EndCase(false, "quoted value with spaces was altered"); return; }
+			g_cvTestBare.GetString(got, sizeof(got));
+			EndCase(StrEqual(got, "unquoted"), StrEqual(got, "unquoted") ? "2000-character and spaced quoted values intact" : "bare value wrong");
+		}
+
+		case C_CFG_MAP_CHANGE:
+		{
+			char path[PLATFORM_MAX_PATH], text[256];
+			CfgPath("afkbomb", path, sizeof(path));
+			Format(g_cfgTypo, sizeof(g_cfgTypo), "afkbomb_typo_%d", GetTime() + 1);
+				Format(text, sizeof(text), "%s 1\n", g_cfgTypo);
+			CfgWrite(path, text);
+			ServerCommand("sm plugins reload afkbomb"); // first apply: reports the typo
+			Schedule(1.5, c, 1);
 		}
 
 		case C_HUMAN_DROP:
@@ -851,6 +975,135 @@ void RunStep(int c, int step)
 
 	switch (c)
 	{
+		case C_CFG_CREATED:
+		{
+			char path[PLATFORM_MAX_PATH];
+			CfgPath("afkbomb", path, sizeof(path));
+			if (!FileExists(path)) { EndCase(false, "no config file in the SourceMod configs folder after load"); return; }
+			static const char stray[][] = { "cfg/sourcemod/plugin.afkbomb.cfg", "cfg/sourcemod/afkbomb.cfg", "cfg/afkbomb.cfg", "cfg/plugin.afkbomb.cfg" };
+			for (int i = 0; i < sizeof(stray); i++)
+			{
+				if (FileExists(stray[i]))
+				{
+					char why[96];
+					Format(why, sizeof(why), "a config was written to the game folder: %s", stray[i]);
+					EndCase(false, why);
+					return;
+				}
+			}
+			EndCase(true, "configs/afkbomb.cfg created, game cfg folder untouched");
+		}
+
+		case C_CFG_ENTRIES:
+		{
+			char path[PLATFORM_MAX_PATH], why[160], needle[96], block[1024];
+			CfgPath("afkbomb", path, sizeof(path));
+			if (!CfgRead(path, g_cfgA, sizeof(g_cfgA))) { EndCase(false, "config file missing"); return; }
+			if (StrContains(g_cfgA, "afkbombversion") != -1) { EndCase(false, "the version cvar is in the config"); return; }
+			// independent expectations: literal defaults, description starts and bounds from the plugin source
+			static const char names[][] = { "afkbomb", "afkbomb_freezetime", "afkbomb_action", "afkbomb_msg", "afkbomb_latecheck", "afkbomb_latecheckdelay", "afkbomb_latecheckaction" };
+			static const char defs[][] = { "2", "0", "0", "1", "2", "5.0", "1" };
+			static const char descs[][] = { "How long after freezetime ends", "DEPRECATED since 1.5.1", "What to do when someone is considered afk at the beginning",
+				"Notify team when bomb is dropped", "Number of latechecks", "Time between 2 latechecks", "What to do when someone is considered afk after" };
+			static const char mins[][] = { "0", "0", "0", "0", "0", "1", "0" };
+			static const char maxs[][] = { "", "1", "1", "1", "", "", "1" };
+			for (int i = 0; i < sizeof(names); i++)
+			{
+				Format(needle, sizeof(needle), "\n%s \"%s\"", names[i], defs[i]);
+				int at = StrContains(g_cfgA, needle);
+				if (at == -1) { Format(why, sizeof(why), "no entry %s \"%s\"", names[i], defs[i]); EndCase(false, why); return; }
+				if (StrContains(g_cfgA[at + 1], needle) != -1) { Format(why, sizeof(why), "entry %s twice", names[i]); EndCase(false, why); return; }
+				CfgBlockBefore(at, block, sizeof(block));
+				if (StrContains(block, descs[i]) == -1) { Format(why, sizeof(why), "%s: description not in its comments", names[i]); EndCase(false, why); return; }
+				Format(needle, sizeof(needle), "// Default: %s\n", defs[i]);
+				if (StrContains(block, needle) == -1) { Format(why, sizeof(why), "%s: default not in its comments", names[i]); EndCase(false, why); return; }
+				Format(needle, sizeof(needle), "// Min: %s\n", mins[i]);
+				if (StrContains(block, needle) == -1) { Format(why, sizeof(why), "%s: min not in its comments", names[i]); EndCase(false, why); return; }
+				if (maxs[i][0] != '\0')
+				{
+					Format(needle, sizeof(needle), "// Max: %s\n", maxs[i]);
+					if (StrContains(block, needle) == -1) { Format(why, sizeof(why), "%s: max not in its comments", names[i]); EndCase(false, why); return; }
+				}
+				else if (StrContains(block, "// Max:") != -1) { Format(why, sizeof(why), "%s: a max that does not exist", names[i]); EndCase(false, why); return; }
+				bool deprecated = StrContains(block, "// DEPRECATED") != -1;
+				if (deprecated != (i == 1)) { Format(why, sizeof(why), "%s: deprecated marking wrong", names[i]); EndCase(false, why); return; }
+			}
+			EndCase(true, "7 entries with description, default, limits; deprecated one marked; no version");
+		}
+
+		case C_CFG_APPLIED:
+		{
+			bool ok = GetCvarInt("afkbomb") == 3 && GetCvarInt("afkbomb_latecheck") == 4 && GetCvarInt("afkbomb_msg") == 0
+				&& GetCvarFloat("afkbomb_latecheckdelay") == 7.5
+				&& GetCvarInt("afkbomb_action") == 0 && GetCvarInt("afkbomb_latecheckaction") == 1; // commented out: defaults
+			char why[160];
+			Format(why, sizeof(why), "afkbomb=%d latecheck=%d msg=%d delay=%.1f action=%d latecheckaction=%d", GetCvarInt("afkbomb"), GetCvarInt("afkbomb_latecheck"),
+				GetCvarInt("afkbomb_msg"), GetCvarFloat("afkbomb_latecheckdelay"), GetCvarInt("afkbomb_action"), GetCvarInt("afkbomb_latecheckaction"));
+			EndCase(ok, ok ? "edited values in effect, commented lines ignored" : why);
+		}
+
+		case C_CFG_APPEND:
+		{
+			char path[PLATFORM_MAX_PATH], why[160];
+			CfgPath("afkbomb", path, sizeof(path));
+			if (!CfgRead(path, g_cfgA, sizeof(g_cfgA))) { EndCase(false, "config file missing"); return; }
+			if (step == 1)
+			{
+				if (StrContains(g_cfgA, g_cfgOld) != 0) { EndCase(false, "existing content was changed or reordered"); return; }
+				static const char added[][] = { "\nafkbomb_freezetime \"0\"", "\nafkbomb_msg \"1\"", "\nafkbomb_latecheck \"2\"", "\nafkbomb_latecheckdelay \"5.0\"", "\nafkbomb_latecheckaction \"1\"" };
+				for (int i = 0; i < sizeof(added); i++)
+					if (StrContains(g_cfgA[strlen(g_cfgOld)], added[i]) == -1) { Format(why, sizeof(why), "entry not appended: %s", added[i][1]); EndCase(false, why); return; }
+				if (StrContains(g_cfgA[strlen(g_cfgOld)], "\nafkbomb \"") != -1 || StrContains(g_cfgA[strlen(g_cfgOld)], "\nafkbomb_action \"") != -1)
+					{ EndCase(false, "an entry that already existed was appended again"); return; }
+				if (GetCvarInt("afkbomb") != 5 || GetCvarInt("afkbomb_action") != 1) { EndCase(false, "values already in the file were not applied"); return; }
+				strcopy(g_cfgB, sizeof(g_cfgB), g_cfgA);
+				ServerCommand("sm plugins reload afkbomb");
+				Schedule(1.5, c, 2);
+				return;
+			}
+			bool same = StrEqual(g_cfgA, g_cfgB);
+			EndCase(same, same ? "missing entries appended after the old text; a complete file is left alone" : "a complete file was modified on the next load");
+		}
+
+		case C_CFG_FOREIGN:
+		{
+			char why[160];
+			if (GetCvarInt("afkbomb") != 4) { EndCase(false, "the known line was not applied"); return; }
+			if (FindConVar("mp_freezetime").FloatValue == 99.0) { EndCase(false, "a cvar the plugin does not own was changed"); return; }
+			int n = CountInSmLog(g_cfgTypo);
+			if (n != 1) { Format(why, sizeof(why), "unknown name logged %d times, expected once", n); EndCase(false, why); return; }
+			EndCase(true, "foreign cvar untouched, unknown name logged once");
+		}
+
+		case C_CFG_MAP_CHANGE:
+		{
+			char path[PLATFORM_MAX_PATH], text[256];
+			CfgPath("afkbomb", path, sizeof(path));
+			if (step == 1)
+			{
+				if (CountInSmLog(g_cfgTypo) != 1) { EndCase(false, "setup: the unknown name was not logged at load"); return; }
+				Format(text, sizeof(text), "%s 1\nafkbomb_msg \"0\"\n", g_cfgTypo);
+				CfgWrite(path, text);
+				Schedule(1.0, c, 2);
+				return;
+			}
+			if (step == 2)
+			{
+				if (GetCvarInt("afkbomb_msg") != 1) { EndCase(false, "the edit took effect before the map changed"); return; }
+				g_mapChanging = true;
+				GetCurrentMap(text, sizeof(text));
+				ServerCommand("changelevel %s", text);
+				return;
+			}
+			// step 3: one second after the next map's configs ran
+			g_interfered = false; // the map change fires the game's own round_start
+			char why[160];
+			if (GetCvarInt("afkbomb_msg") != 0) { EndCase(false, "edited value not in effect after the map change"); return; }
+			int n = CountInSmLog(g_cfgTypo);
+			if (n != 1) { Format(why, sizeof(why), "unknown name logged %d times over load + map change, expected once", n); EndCase(false, why); return; }
+			EndCase(true, "value applied after the map change; unknown name still logged once");
+		}
+
 		case C_HUMAN_FIRST:
 		{
 			if (carrier == 0 || other == 0 || extra == 0) { EndCase(false, "a client is missing"); return; }
@@ -1433,6 +1686,11 @@ public Action Timer_NextCase(Handle timer, any next)
 	{
 		g_running = false;
 		ResetCvars();
+		char cfg[PLATFORM_MAX_PATH];
+		CfgPath("afkbomb", cfg, sizeof(cfg)); // leave no edited config behind for the next run
+		DeleteFile(cfg);
+		CfgPath("afkbomb_tests", cfg, sizeof(cfg));
+		DeleteFile(cfg);
 		if (GetPluginStatus(FindPluginByFile("afkbomb.smx")) != Plugin_Running)
 		{
 			g_fail++;
@@ -1689,4 +1947,66 @@ float GetCvarFloat(const char[] name)
 {
 	ConVar cv = FindConVar(name);
 	return (cv != null) ? cv.FloatValue : -999.0;
+}
+
+//===== Config file helpers =====
+
+void CfgPath(const char[] name, char[] out, int max)
+{
+	BuildPath(Path_SM, out, max, "configs/%s.cfg", name);
+}
+
+void CfgWrite(const char[] path, const char[] text)
+{
+	File f = OpenFile(path, "wb");
+	if (f == null)
+	{
+		LogError("cannot write %s", path);
+		return;
+	}
+	f.WriteString(text, false);
+	delete f;
+}
+
+bool CfgRead(const char[] path, char[] out, int max)
+{
+	out[0] = '\0';
+	File f = OpenFile(path, "rb");
+	if (f == null)
+		return false;
+	int size = FileSize(path);
+	if (size >= max)
+		size = max - 1;
+	int n = (size > 0) ? f.ReadString(out, max, size) : 0;
+	delete f;
+	out[(n > 0) ? n : 0] = '\0';
+	return true;
+}
+
+// The comment lines directly above the entry that starts at g_cfgA[at] (back to the previous blank line).
+void CfgBlockBefore(int at, char[] out, int max)
+{
+	int start = at;
+	while (start > 0 && !(g_cfgA[start - 1] == '\n' && start >= 2 && g_cfgA[start - 2] == '\n'))
+		start--;
+	int len = at - start + 2; // includes the newline that ends the last comment line
+	if (len > max) len = max;
+	strcopy(out, len, g_cfgA[start]);
+}
+
+// Lines of today's SourceMod log that contain text.
+int CountInSmLog(const char[] text)
+{
+	char date[16], path[PLATFORM_MAX_PATH], line[512];
+	FormatTime(date, sizeof(date), "%Y%m%d");
+	BuildPath(Path_SM, path, sizeof(path), "logs/L%s.log", date);
+	File f = OpenFile(path, "r");
+	if (f == null)
+		return 0;
+	int n = 0;
+	while (f.ReadLine(line, sizeof(line)))
+		if (StrContains(line, text) != -1)
+			n++;
+	delete f;
+	return n;
 }

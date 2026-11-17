@@ -72,6 +72,9 @@ enum
 	C_PICKUP_AFTER_ACTIVITY,
 	C_PICKUP_NEVER_FLAGGED,
 	C_PICKUP_BLOCK_ENDS,
+	C_PLANT_STOPS_LATE,
+	C_PLANT_NEXT_ROUND,
+	C_PLANT_PENDING,
 	C_HUMAN_DROP,     // the last two need a real client connected; skipped otherwise
 	C_HUMAN_GIVE_MSG,
 	C_HUMAN_FIRST,
@@ -155,6 +158,9 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_PICKUP_AFTER_ACTIVITY], NAME_LEN, "AFK-flagged player who acted picks the bomb up on touch");
 	strcopy(g_caseNames[C_PICKUP_NEVER_FLAGGED], NAME_LEN, "never-flagged player picks the bomb up normally");
 	strcopy(g_caseNames[C_PICKUP_BLOCK_ENDS], NAME_LEN, "pickup block ends with the round");
+	strcopy(g_caseNames[C_PLANT_STOPS_LATE], NAME_LEN, "no late check runs after the bomb is planted");
+	strcopy(g_caseNames[C_PLANT_NEXT_ROUND], NAME_LEN, "checks resume in the round after a plant");
+	strcopy(g_caseNames[C_PLANT_PENDING], NAME_LEN, "plant while a check is pending raises no error");
 	strcopy(g_caseNames[C_CLAMP], NAME_LEN, "cvar bounds clamped");
 	strcopy(g_caseNames[C_DROP_STILL], NAME_LEN, "stationary carrier loses bomb");
 	strcopy(g_caseNames[C_DROP_MOVING], NAME_LEN, "moved carrier keeps bomb");
@@ -704,6 +710,32 @@ void StartCase(int c)
 			Schedule(3.5, c, 2);
 		}
 
+		case C_PLANT_STOPS_LATE:
+		{
+			SetupCarrierRound(false, false, 1, 2, 1);
+			SetCvarFloat("afkbomb_latecheckdelay", 1.0);
+			Schedule(1.1, c, 1); // freeze end (1.0s) found nobody, next check due at 2.0s: plant now
+			Schedule(1.2, c, 2); // carrier appears; without the plant it is found at 2.0s and dropped by 4.0s
+			Schedule(5.7, c, 3);
+		}
+
+		case C_PLANT_NEXT_ROUND:
+		{
+			SetupCarrierRound(false, false, 1, 2, 1);
+			SetCvarFloat("afkbomb_latecheckdelay", 1.0);
+			Schedule(1.1, c, 1);
+			Schedule(1.2, c, 2);
+			Schedule(3.0, c, 3); // still held; new round: freeze end 4.0s, check 5.0s
+			Schedule(6.0, c, 4);
+		}
+
+		case C_PLANT_PENDING:
+		{
+			SetupCarrierRound(true, false, 2, 2, 1); // snapshot at 1.0s, check pending until 3.0s
+			Schedule(1.5, c, 1);
+			Schedule(4.5, c, 2);
+		}
+
 		case C_DISCONNECT:
 		{
 			SetupCarrierRound(true, false, 1, 0, 1);
@@ -1246,6 +1278,43 @@ void RunStep(int c, int step)
 			if (other == 0) { EndCase(false, "other T gone"); return; }
 			if (HasC4(other)) { EndCase(false, "dead carrier's bomb given to other T"); return; }
 			EndCase(true, "bomb not given to other T");
+		}
+
+		case C_PLANT_STOPS_LATE, C_PLANT_NEXT_ROUND:
+		{
+			if (step == 1) { FireNamedEvent("bomb_planted"); return; }
+			if (step == 2)
+			{
+				int late = SpawnFake("AFKTest Late", CS_TEAM_T, true);
+				if (late == 0) { EndCase(false, "could not create late carrier"); return; }
+				g_uidCarrier = GetClientUserId(late);
+				return;
+			}
+			if (carrier == 0) { EndCase(false, "late carrier gone"); return; }
+			if (c == C_PLANT_STOPS_LATE)
+			{
+				if (HasC4(carrier)) EndCase(true, "no late check ran after the plant");
+				else EndCase(false, "late check dropped the bomb after the plant");
+				return;
+			}
+			if (step == 3)
+			{
+				if (!HasC4(carrier)) { EndCase(false, "late check ran after the plant"); return; }
+				FireRoundStart();
+				return;
+			}
+			if (HasC4(carrier)) { EndCase(false, "next round's check never dropped the bomb"); return; }
+			EndCase(true, "checks resumed in the next round");
+		}
+
+		case C_PLANT_PENDING:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+			if (step == 1) { FireNamedEvent("bomb_planted"); return; }
+			if (GetPluginStatus(FindPluginByFile("afkbomb.smx")) != Plugin_Running)
+				{ EndCase(false, "afkbomb stopped running"); return; }
+			if (!HasC4(carrier)) { EndCase(false, "pending check acted after the plant"); return; }
+			EndCase(true, "pending check ended quietly");
 		}
 
 		case C_DISCONNECT:

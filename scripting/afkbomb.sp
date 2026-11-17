@@ -72,6 +72,10 @@ new bool:g_afkJudged[ MAXPLAYERS + 1 ];
 //(cleared at round start, or when the player touches the bomb in a state different from the snapshot)
 new bool:g_afkFlag[ MAXPLAYERS + 1 ];
 
+//Decided once at round start : is this round checked ? (a later change of afkbomb does not start a check;
+//afkbomb 0 still cancels a running one)
+new bool:g_roundChecked;
+
 //Prevent re-running a function
 new g_iAccount;
 
@@ -177,12 +181,11 @@ public Action:OnWeaponCanUse( client, weapon )
 
 public Event_RoundStart( Handle:event, const String:name[], bool:dontBroadcast )
 {
-	if ( GetConVarInt( g_afkBomb ) >= 1 )
-	{
-		++g_roundNumber; //Invalidates every check of the previous round
-		g_firstBombDrop = true;
-		ClearSnapshots();
-	}
+	//Whatever afkbomb is : the previous round's checks end and the pickup block (flags) ends with the round
+	++g_roundNumber; //Invalidates every check of the previous round
+	g_firstBombDrop = true;
+	ClearSnapshots();
+	g_roundChecked = ( GetConVarInt( g_afkBomb ) >= 1 );
 
 	return bool:Plugin_Handled;
 }
@@ -196,7 +199,7 @@ public Event_BombPlanted( Handle:event, const String:name[], bool:dontBroadcast 
 //Freezetime is over : players can act now, so this is where the judged period starts
 public Event_FreezeEnd( Handle:event, const String:name[], bool:dontBroadcast )
 {
-	if ( GetConVarInt( g_afkBomb ) >= 1 )
+	if ( g_roundChecked && GetConVarInt( g_afkBomb ) >= 1 )
 		CheckForBomber( INVALID_HANDLE, g_roundNumber );
 }
 

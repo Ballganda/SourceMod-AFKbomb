@@ -74,6 +74,8 @@ enum
 	C_PICKUP_AFTER_ACTIVITY,
 	C_PICKUP_NEVER_FLAGGED,
 	C_PICKUP_BLOCK_ENDS,
+	C_BLOCK_ENDS_DISABLED, // issue #21
+	C_ENABLE_MID_FREEZE,
 	C_PLANT_STOPS_LATE,
 	C_PLANT_NEXT_ROUND,
 	C_PLANT_PENDING,
@@ -178,6 +180,8 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_PICKUP_AFTER_ACTIVITY], NAME_LEN, "AFK-flagged player who acted picks the bomb up on touch");
 	strcopy(g_caseNames[C_PICKUP_NEVER_FLAGGED], NAME_LEN, "never-flagged player picks the bomb up normally");
 	strcopy(g_caseNames[C_PICKUP_BLOCK_ENDS], NAME_LEN, "pickup block ends with the round");
+	strcopy(g_caseNames[C_BLOCK_ENDS_DISABLED], NAME_LEN, "pickup block ends with the round when the next round starts with afkbomb 0");
+	strcopy(g_caseNames[C_ENABLE_MID_FREEZE], NAME_LEN, "afkbomb raised during freezetime starts no check that round");
 	strcopy(g_caseNames[C_PLANT_STOPS_LATE], NAME_LEN, "no late check runs after the bomb is planted");
 	strcopy(g_caseNames[C_PLANT_NEXT_ROUND], NAME_LEN, "checks resume in the round after a plant");
 	strcopy(g_caseNames[C_PLANT_PENDING], NAME_LEN, "plant while a check is pending raises no error");
@@ -615,6 +619,22 @@ void StartCase(int c)
 			Schedule(2.5, c, 1); // bomb under the carrier: blocked
 			Schedule(3.2, c, 2); // still blocked; new round: the bomb lying under the carrier is collected at once
 			Schedule(4.0, c, 4);
+		}
+
+		case C_BLOCK_ENDS_DISABLED:
+		{
+			SetupCarrierRound(true, false, 1, 0, 1); // carrier judged AFK, bomb dropped at 2.0s
+			Schedule(2.5, c, 1); // bomb under the carrier: blocked
+			Schedule(3.2, c, 2); // new round starts with afkbomb 0
+			Schedule(4.0, c, 3);
+		}
+
+		case C_ENABLE_MID_FREEZE:
+		{
+			SetupCarrierRound(true, false, 0, 0, 1, 3.0); // disabled round, freezetime ends at 3.0s
+			Schedule(1.5, c, 1); // raise afkbomb during freezetime
+			Schedule(5.0, c, 2); // would have been dropped at 4.0s; start the next round
+			Schedule(8.0, c, 3); // new round: freeze end 6.0s, check at 7.0s
 		}
 
 		case C_DROP_MOVING:
@@ -1145,6 +1165,38 @@ void RunStep(int c, int step)
 				EndCase(!HasC4(who) && BombOnGround(), !HasC4(who) && BombOnGround() ? "AFK player did not pick the bomb up" : "AFK player picked the bomb up (or it vanished)");
 			else
 				EndCase(HasC4(who), HasC4(who) ? "player picked the bomb up on touch" : "player could not pick the bomb up");
+		}
+
+		case C_BLOCK_ENDS_DISABLED:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+			if (step == 1)
+			{
+				if (!PutBombUnder(carrier)) { EndCase(false, "no bomb on the ground to put under the player"); return; }
+				return;
+			}
+			if (step == 2)
+			{
+				if (HasC4(carrier)) { EndCase(false, "setup: the AFK player picked the bomb up before the new round"); return; }
+				SetCvarInt("afkbomb", 0);
+				FireNamedEvent("round_start");
+				return;
+			}
+			EndCase(HasC4(carrier), HasC4(carrier) ? "bomb picked up in the round that started disabled" : "AFK flag still blocked the pickup in a round that started with afkbomb 0");
+		}
+
+		case C_ENABLE_MID_FREEZE:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+			if (step == 1) { SetCvarInt("afkbomb", 1); return; }
+			if (step == 2)
+			{
+				if (!HasC4(carrier)) { EndCase(false, "afkbomb raised during freezetime started a check in that round"); return; }
+				FireRoundStart();
+				return;
+			}
+			if (HasC4(carrier)) { EndCase(false, "next round did not check the carrier"); return; }
+			EndCase(true, "no check in the round raised during freezetime, next round checked");
 		}
 
 		case C_HUMAN_DROP:

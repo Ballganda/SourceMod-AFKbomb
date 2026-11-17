@@ -29,6 +29,10 @@
 
 #define PLUGIN_VERSION "1.5.1"
 
+//Chat colour codes (control characters, written as escapes)
+#define CHAT_DEFAULT "\x01"
+#define CHAT_GREEN "\x04"
+
 public Plugin:myinfo =
 {
 	name = "Afk Bomb",
@@ -409,8 +413,8 @@ bool:stripAndGive2ActiveTBomb( any:iOldBomber )
 	{
 		//Server language for everyone, one message
 		decl String:sGiveMsg[ 256 ];
-		Format( sGiveMsg, sizeof(sGiveMsg), "%T", "StripNGive Bomb", LANG_SERVER, "", iOldBomber, "" );
-		PrintToChatAll( "[SM] %s", sGiveMsg );
+		Format( sGiveMsg, sizeof(sGiveMsg), "%T", "StripNGive Bomb", LANG_SERVER, CHAT_GREEN, iOldBomber, CHAT_DEFAULT );
+		PrintToChatAll( "%s[SM] %s%s", CHAT_GREEN, CHAT_DEFAULT, sGiveMsg );
 	}
 
 	return true;

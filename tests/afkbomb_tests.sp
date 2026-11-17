@@ -27,6 +27,10 @@
 #define MAX_ATTEMPTS 3 // a case is rerun if the game restarted the round under it
 #define MAX_STEP 99 // timer data = case * 100 + step
 
+// Chat colour codes as a client receives them (control characters, written as escapes)
+#define CHAT_DEFAULT "\x01"
+#define CHAT_GREEN "\x04"
+
 enum
 {
 	C_LOADED = 0,
@@ -615,7 +619,7 @@ void StartCase(int c)
 			char clog[PLATFORM_MAX_PATH];
 			g_cvClientLog.GetString(clog, sizeof(clog));
 			g_clientLogPos = -1;
-			File lf = (clog[0] != ' ') ? OpenFile(clog, "rb") : null;
+			File lf = (clog[0] != '\0') ? OpenFile(clog, "rb") : null;
 			if (lf != null)
 			{
 				lf.Seek(0, SEEK_END);
@@ -1058,7 +1062,7 @@ void RemoveSlot(int client, int slot)
 char g_colourWhy[160];
 
 // The client's console.log keeps the colour control bytes of the chat it received.
-// 1.5.0 sent "[SM] " + "<name> seems to be afk with the bomb ..."
+// 1.5.0 sent "\x04[SM] \x01" + "\x04<name> \x01seems to be afk with the bomb ..."
 bool CheckGiveColours(int carrier)
 {
 	char clog[PLATFORM_MAX_PATH];
@@ -1078,7 +1082,7 @@ bool CheckGiveColours(int carrier)
 	char name[MAX_NAME_LENGTH];
 	GetClientName(carrier, name, sizeof(name));
 	char want[192];
-	Format(want, sizeof(want), "[SM] %s seems to be afk with the bomb", name);
+	Format(want, sizeof(want), "%s[SM] %s%s%s %sseems to be afk with the bomb", CHAT_GREEN, CHAT_DEFAULT, CHAT_GREEN, name, CHAT_DEFAULT);
 	char line[512];
 	int seen = 0, good = 0;
 	while (!f.EndOfFile() && f.ReadLine(line, sizeof(line)))

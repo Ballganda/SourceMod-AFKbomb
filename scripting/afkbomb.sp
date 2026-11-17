@@ -27,12 +27,12 @@
 #include <cstrike>
 #include <instance_config> //settings file in this server's own SourceMod folder (not the shared game cfg folder)
 
-#define PLUGIN_VERSION "1.5.0"
+#define PLUGIN_VERSION "1.5.1"
 
 public Plugin:myinfo =
 {
 	name = "Afk Bomb",
-	author = "RedSword / Bob Le Ponge",
+	author = "RedSword / Bob Le Ponge, BallGanda",
 	description = "Drop the bomb if the player appears afk. Also possible to give to a random T since 1.4.0.",
 	version = PLUGIN_VERSION,
 	url = "http://www.sourcemod.net/"

@@ -69,12 +69,11 @@ new Float:g_snapAngle[ MAXPLAYERS + 1 ][ 3 ]; // GetClientAbsAngles()
 new Float:g_snapOrigin[ MAXPLAYERS + 1 ][ 3 ]; // GetClientAbsOrigin()
 new Float:g_snapVelocity[ MAXPLAYERS + 1 ][ 3 ]; // GetEntPropVector()
 
-//Result of the latest comparison : true = unchanged since the snapshot (afk)
-new bool:g_afkJudged[ MAXPLAYERS + 1 ];
-
-//Judged afk at any comparison this round : never a receiver, and cannot pick up the bomb, until it shows activity
-//(cleared at round start, or when the player touches the bomb in a state different from the snapshot)
-new bool:g_afkFlag[ MAXPLAYERS + 1 ];
+//Afk = result of the latest comparison : true = unchanged since the snapshot
+//Every comparison re-judges every snapshotted terrorist. While afk : never a receiver, and cannot pick up the bomb
+//(cleared at round start, at a comparison that finds the player changed, or when the player touches the bomb
+//in a state different from the snapshot)
+new bool:g_isAfk[ MAXPLAYERS + 1 ];
 
 //Decided once at round start : is this round checked ? (a later change of afkbomb does not start a check;
 //afkbomb 0 still cancels a running one)
@@ -158,15 +157,14 @@ public OnClientPutInServer( client )
 public OnClientDisconnect( client )
 {
 	g_snapUserId[ client ] = 0;
-	g_afkJudged[ client ] = false;
-	g_afkFlag[ client ] = false;
+	g_isAfk[ client ] = false;
 }
 
 //A player judged afk cannot collect the bomb; the state is compared again at the touch,
 //so as soon as the player showed any activity the pickup goes through
 public Action:OnWeaponCanUse( client, weapon )
 {
-	if ( !g_afkFlag[ client ] )
+	if ( !g_isAfk[ client ] )
 		return Plugin_Continue;
 
 	decl String:sClassName[ 32 ];
@@ -178,14 +176,13 @@ public Action:OnWeaponCanUse( client, weapon )
 	if ( sameState( client, true ) )
 		return Plugin_Handled;
 
-	g_afkFlag[ client ] = false;
-	g_afkJudged[ client ] = false;
+	g_isAfk[ client ] = false;
 	return Plugin_Continue;
 }
 
 public Event_RoundStart( Handle:event, const String:name[], bool:dontBroadcast )
 {
-	//Whatever afkbomb is : the previous round's checks end and the pickup block (flags) ends with the round
+	//Whatever afkbomb is : the previous round's checks end and the afk judgements (and so the pickup block) end with the round
 	++g_checkGeneration; //Invalidates every check of the previous round
 	g_firstBombDrop = true;
 	ClearSnapshots();
@@ -288,7 +285,7 @@ public Action:SecondScan( Handle:timer, Handle:bombUserIdAndCheckGenerationData 
 		if ( iBomber != 0 && //Prevent a disconnecting player between first & second scan
 				IsClientInGame( iBomber ) &&
 				IsPlayerAlive( iBomber ) &&
-				g_afkJudged[ iBomber ] ) //state changed ?
+				g_isAfk[ iBomber ] ) //state unchanged ?
 		{
 			if ( g_firstBombDrop || ++g_lateCheckCount >= GetConVarInt( g_afkBomb_lateCheckNumber ) )
 			{
@@ -337,7 +334,7 @@ public Action:SecondScan( Handle:timer, Handle:bombUserIdAndCheckGenerationData 
 //========== Privates ===========
 
 //===== 1fct
-//Give the bomb to the best receiver : active (judged in the latest comparison), alive T other than the old bomber, never flagged afk
+//Give the bomb to the best receiver : alive T other than the old bomber, active in the latest comparison
 //Order : humans before bots, then moving before stationary, then smallest distance to the old bomber
 //return false (and leave the bomb alone) if nobody qualifies
 bool:stripAndGive2ActiveTBomb( any:iOldBomber )
@@ -362,8 +359,7 @@ bool:stripAndGive2ActiveTBomb( any:iOldBomber )
 				GetClientTeam( i ) != CS_TEAM_T ||
 				!IsPlayerAlive( i ) ||
 				g_snapUserId[ i ] != GetClientUserId( i ) || //has to have been compared
-				g_afkJudged[ i ] ||
-				g_afkFlag[ i ] )
+				g_isAfk[ i ] )
 			continue;
 
 		decl Float:pos[ 3 ];
@@ -442,18 +438,16 @@ ClearSnapshots()
 	for ( new i = 1; i <= MaxClients; ++i )
 	{
 		g_snapUserId[ i ] = 0;
-		g_afkJudged[ i ] = false;
-		g_afkFlag[ i ] = false;
+		g_isAfk[ i ] = false;
 	}
 }
 
-//Record the state of every living terrorist
+//Record the state of every living terrorist (the afk judgement stays until the next comparison)
 SnapshotAll()
 {
 	for ( new i = 1; i <= MaxClients; ++i )
 	{
 		g_snapUserId[ i ] = 0;
-		g_afkJudged[ i ] = false;
 
 		if ( IsClientInGame( i ) && GetClientTeam( i ) == CS_TEAM_T && IsPlayerAlive( i ) )
 		{
@@ -473,15 +467,11 @@ SnapshotAll()
 	}
 }
 
-//Compare every snapshotted terrorist with its current state
+//Re-judge every snapshotted terrorist : afk if unchanged since its snapshot, otherwise active again
 CompareAll()
 {
 	for ( new i = 1; i <= MaxClients; ++i )
-	{
-		g_afkJudged[ i ] = ( g_snapUserId[ i ] != 0 && sameState( i ) );
-		if ( g_afkJudged[ i ] )
-			g_afkFlag[ i ] = true;
-	}
+		g_isAfk[ i ] = ( g_snapUserId[ i ] != 0 && sameState( i ) );
 }
 
 //true if the client is exactly in the state of its snapshot (nothing done since)

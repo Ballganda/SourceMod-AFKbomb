@@ -77,6 +77,7 @@ enum
 	C_LATE_COUNT,
 	C_LATE_GIVE,
 	C_LATE_FRESH_IDLE,       // issue #23: every late interval compares with a fresh snapshot
+	C_LATE_RETURNED,         // issue #33: AFK is the latest comparison's result
 	C_LATE_COUNT_RESET,
 	C_LATE_GIVE_RULES,
 	C_LATE_NONE,
@@ -208,6 +209,7 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_LATE_COUNT], NAME_LEN, "latecheck=3 waits for 3 checks");
 	strcopy(g_caseNames[C_LATE_GIVE], NAME_LEN, "latecheckaction=0 gives late bomb away");
 	strcopy(g_caseNames[C_LATE_FRESH_IDLE], NAME_LEN, "T who moved early but idles later is AFK in the next late check");
+	strcopy(g_caseNames[C_LATE_RETURNED], NAME_LEN, "T idle in one late check, active in the next, receives the bomb");
 	strcopy(g_caseNames[C_LATE_COUNT_RESET], NAME_LEN, "carrier who moves between late checks restarts the count");
 	strcopy(g_caseNames[C_LATE_GIVE_RULES], NAME_LEN, "bomb given in a late check is judged under late-check rules");
 	strcopy(g_caseNames[C_HUMAN_DROP], NAME_LEN, "real client: AFK human loses bomb");
@@ -780,7 +782,8 @@ void StartCase(int c)
 		case C_GIVE_NO_BOUNCE:
 		{
 			SetupCarrierRound(true, true, 1, 0, 0);
-			Schedule(2.6, c, 3); // the carrier judged AFK now moves: still never a receiver
+			// the old carrier stays unchanged, so the latest comparison (3.0s) still judges it AFK: never a receiver
+			// (one that moves is active again and may receive it, issue #33)
 			Schedule(3.5, c, 1); // the receiver is scanned at 2.0s and 3.0s
 			Schedule(4.5, c, 2);
 		}
@@ -920,6 +923,16 @@ void StartCase(int c)
 			SetCvarFloat("afkbomb_latecheckdelay", 1.0);
 			SetCvarInt("afkbomb_latecheckaction", 0);
 			Schedule(1.2, c, 1); // found at 2.0s; check 1 at 3.0s, check 2 at 4.0s against a snapshot of 3.0s
+			Schedule(4.5, c, 2);
+		}
+
+		case C_LATE_RETURNED:
+		{
+			SetupCarrierRound(false, true, 1, 2, 1, 1.0, -1.0); // "other" idle over the first late interval (2.0-3.0s), active over the second (3.0-4.0s)
+			Schedule(3.5, c, STEP_CHANGE_MONEY_OTHER);
+			SetCvarFloat("afkbomb_latecheckdelay", 1.0);
+			SetCvarInt("afkbomb_latecheckaction", 0);
+			Schedule(1.2, c, 1); // found at 2.0s; check 1 at 3.0s judges "other" AFK, check 2 at 4.0s finds it changed and gives
 			Schedule(4.5, c, 2);
 		}
 
@@ -1485,7 +1498,6 @@ void RunStep(int c, int step)
 		case C_GIVE_NO_BOUNCE:
 		{
 			if (carrier == 0 || other == 0) { EndCase(false, "a fake client is missing"); return; }
-			if (step == 3) { NudgeClient(carrier); return; }
 			if (HasC4(carrier)) { EndCase(false, "bomb bounced back to the original AFK carrier"); return; }
 			if (step == 2) EndCase(true, "bomb stayed away from the AFK carrier");
 		}
@@ -1684,6 +1696,21 @@ void RunStep(int c, int step)
 			if (HasC4(other)) { EndCase(false, "bomb given to a T that was idle in the latest window"); return; }
 			if (!BombOnGround()) { EndCase(false, "bomb is not on the ground"); return; }
 			EndCase(true, "idle in the latest window: AFK, bomb dropped");
+		}
+
+		case C_LATE_RETURNED:
+		{
+			if (step == 1)
+			{
+				int late = SpawnFake("AFKTest Late", CS_TEAM_T, true);
+				if (late == 0) { EndCase(false, "could not create late carrier"); return; }
+				g_uidCarrier = GetClientUserId(late);
+				return;
+			}
+			if (carrier == 0 || other == 0) { EndCase(false, "a fake client is missing"); return; }
+			if (HasC4(carrier)) { EndCase(false, "late carrier kept bomb"); return; }
+			if (!HasC4(other)) { EndCase(false, "bomb not given to the T that was AFK earlier but active in the latest window"); return; }
+			EndCase(true, "active in the latest window: no longer AFK, received the bomb");
 		}
 
 		case C_LATE_COUNT_RESET:

@@ -119,7 +119,7 @@ public OnPluginStart()
 
 	//Settings file : every cvar but the version one (applied in OnConfigsExecuted)
 	InstCfg_Add( g_afkBomb );
-	InstCfg_Add( g_afkBomb_addFreeze );
+	InstCfg_Add( g_afkBomb_addFreeze, true ); //deprecated
 	InstCfg_Add( g_afkBomb_action );
 	InstCfg_Add( g_afkBomb_displayMsg );
 	InstCfg_Add( g_afkBomb_lateCheckNumber );

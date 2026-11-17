@@ -17,6 +17,7 @@
  *   {
  *       gCvFoo = CreateConVar("sm_foo", "1", "What foo does.", 0, true, 0.0, true, 1.0);
  *       InstCfg_Add(gCvFoo);      // every cvar that belongs in the config; leave the version cvar out
+ *       InstCfg_Add(gCvOld, true); // a deprecated cvar: its entry gets a comment saying so
  *       InstCfg_Ensure();         // file is created, or completed, once all cvars are registered
  *   }
  *
@@ -43,20 +44,29 @@
 
 #define INSTCFG_LINE_MAX 8192 // longest line read; anything beyond is ignored
 
-static ArrayList g_InstCfgCvars;     // ConVar handles added with InstCfg_Add
-static StringMap g_InstCfgReported;  // lower-cased unknown names already written to the log
+static ArrayList g_InstCfgCvars;      // ConVar handles added with InstCfg_Add
+static ArrayList g_InstCfgDeprecated; // for each of them, whether it was added as deprecated
+static StringMap g_InstCfgReported;   // lower-cased unknown names already written to the log
 
 /**
  * Adds a cvar to the config. Call it for every cvar of the plugin that belongs in the file, after creating it.
  *
- * @param cvar    A cvar created by this plugin.
+ * @param cvar          A cvar created by this plugin.
+ * @param deprecated    True for a cvar that is only kept so old configs still load: its entry in a generated
+ *                      file says so. The cvar's description plays no part in this.
  */
-stock void InstCfg_Add(Handle cvar)
+stock void InstCfg_Add(Handle cvar, bool deprecated = false)
 {
 	if (g_InstCfgCvars == null)
+	{
 		g_InstCfgCvars = new ArrayList();
+		g_InstCfgDeprecated = new ArrayList();
+	}
 	if (cvar != null && g_InstCfgCvars.FindValue(cvar) == -1)
+	{
 		g_InstCfgCvars.Push(cvar);
+		g_InstCfgDeprecated.Push(deprecated);
+	}
 }
 
 /**
@@ -88,17 +98,13 @@ stock bool InstCfg_Ensure()
 		}
 		char line[INSTCFG_LINE_MAX], name[128], value[8];
 		bool hasValue;
-		bool continued = false;
-		while (f.ReadLine(line, sizeof(line)))
+		while (InstCfg_ReadLine(f, line, sizeof(line)))
 		{
-			int len = strlen(line);
-			bool whole = len > 0 && line[len - 1] == '\n';
-			if (!continued && InstCfg_ParseLine(line, name, sizeof(name), value, 0, hasValue))
+			if (InstCfg_ParseLine(line, name, sizeof(name), value, 0, hasValue))
 			{
 				InstCfg_Lower(name);
 				present.SetValue(name, true);
 			}
-			continued = !whole && !f.EndOfFile();
 		}
 		delete f;
 
@@ -144,7 +150,7 @@ stock bool InstCfg_Ensure()
 		if (exists && added == 0 && !endsWithNewline)
 			out.WriteString("\n", false);
 		out.WriteString("\n", false); // blank line before every entry
-		InstCfg_WriteEntry(out, cvar);
+		InstCfg_WriteEntry(out, cvar, g_InstCfgDeprecated.Get(i) != 0);
 		added++;
 	}
 	delete out;
@@ -192,17 +198,11 @@ stock bool InstCfg_Apply()
 
 	char line[INSTCFG_LINE_MAX], name[128], value[INSTCFG_LINE_MAX];
 	bool hasValue;
-	bool continued = false;
 	int lineNo = 0;
-	while (f.ReadLine(line, sizeof(line)))
+	while (InstCfg_ReadLine(f, line, sizeof(line)))
 	{
-		int len = strlen(line);
-		bool whole = len > 0 && line[len - 1] == '\n';
-		bool skip = continued; // the rest of a line longer than the buffer
-		continued = !whole && !f.EndOfFile();
-		if (!skip)
-			lineNo++;
-		if (skip || !InstCfg_ParseLine(line, name, sizeof(name), value, sizeof(value), hasValue))
+		lineNo++;
+		if (!InstCfg_ParseLine(line, name, sizeof(name), value, sizeof(value), hasValue))
 			continue;
 
 		InstCfg_Lower(name);
@@ -257,7 +257,7 @@ static void InstCfg_WriteHeader(File out)
 	out.WriteString("// Entries missing here are appended automatically when the plugin loads; existing lines are never changed.\n", false);
 }
 
-static void InstCfg_WriteEntry(File out, ConVar cvar)
+static void InstCfg_WriteEntry(File out, ConVar cvar, bool deprecated)
 {
 	char name[128], desc[2048], def[512], text[4096];
 	cvar.GetName(name, sizeof(name));
@@ -284,7 +284,7 @@ static void InstCfg_WriteEntry(File out, ConVar cvar)
 		Format(text, sizeof(text), "// Max: %s\n", num);
 		out.WriteString(text, false);
 	}
-	if (StrContains(desc, "DEPRECATED", false) != -1)
+	if (deprecated)
 		out.WriteString("// DEPRECATED: kept so old configs still load; it has no effect.\n", false);
 
 	Format(text, sizeof(text), "%s \"%s\"\n", name, def);
@@ -300,6 +300,24 @@ static void InstCfg_FormatNumber(float value, char[] buffer, int maxlen)
 		buffer[--len] = '\0';
 	if (len > 0 && buffer[len - 1] == '.')
 		buffer[len - 1] = '\0';
+}
+
+// Reads the next line of the file into line. A line longer than the buffer is read to its end and only its
+// first maxlen - 1 characters are kept, so the next call starts at the next line. False at the end of the file.
+static bool InstCfg_ReadLine(File f, char[] line, int maxlen)
+{
+	if (!f.ReadLine(line, maxlen))
+		return false;
+
+	int len = strlen(line);
+	bool whole = len > 0 && line[len - 1] == '\n';
+	char rest[256];
+	while (!whole && !f.EndOfFile() && f.ReadLine(rest, sizeof(rest)))
+	{
+		len = strlen(rest);
+		whole = len > 0 && rest[len - 1] == '\n';
+	}
+	return true;
 }
 
 // Splits one line into name and value. False for blank and comment lines. A value-less name returns hasValue false.

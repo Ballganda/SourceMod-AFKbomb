@@ -49,6 +49,10 @@ enum
 	C_STRIP_SECONDARY,
 	C_STRIP_KNIFE,
 	C_STRIP_KEEPS,
+	C_DROPW_ACTIVE,          // issue #22: the same weapon rules after a dropped held bomb
+	C_DROPW_SECONDARY,
+	C_DROPW_KNIFE,
+	C_DROPW_KEEPS,
 	C_ACTION_LONE,
 	C_ACTION_CT_ONLY,
 	C_DISABLED,
@@ -164,6 +168,10 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_STRIP_SECONDARY], NAME_LEN, "strip while holding C4, no primary: secondary in hand");
 	strcopy(g_caseNames[C_STRIP_KNIFE], NAME_LEN, "strip while holding C4, no primary/secondary: knife in hand");
 	strcopy(g_caseNames[C_STRIP_KEEPS], NAME_LEN, "strip while holding another weapon: it stays in hand");
+	strcopy(g_caseNames[C_DROPW_ACTIVE], NAME_LEN, "drop while holding C4: primary in hand");
+	strcopy(g_caseNames[C_DROPW_SECONDARY], NAME_LEN, "drop while holding C4, no primary: secondary in hand");
+	strcopy(g_caseNames[C_DROPW_KNIFE], NAME_LEN, "drop while holding C4, no primary/secondary: knife in hand");
+	strcopy(g_caseNames[C_DROPW_KEEPS], NAME_LEN, "drop while holding another weapon: it stays in hand");
 	strcopy(g_caseNames[C_ACTION_CT_ONLY], NAME_LEN, "action=0 never gives bomb to an active CT, drops it");
 	strcopy(g_caseNames[C_DISABLE_MID], NAME_LEN, "afkbomb=0 set mid-check cancels drop");
 	strcopy(g_caseNames[C_DISABLE_LATE], NAME_LEN, "afkbomb=0 set during late checks stops them");
@@ -739,20 +747,25 @@ void StartCase(int c)
 			Schedule(4.5, c, 2);
 		}
 
-		case C_STRIP_ACTIVE, C_STRIP_SECONDARY, C_STRIP_KNIFE, C_STRIP_KEEPS:
+		case C_STRIP_ACTIVE, C_STRIP_SECONDARY, C_STRIP_KNIFE, C_STRIP_KEEPS, C_DROPW_ACTIVE, C_DROPW_SECONDARY, C_DROPW_KNIFE, C_DROPW_KEEPS:
 		{
+			bool dropping = (c >= C_DROPW_ACTIVE && c <= C_DROPW_KEEPS);
 			KillLooseGuns(); // an earlier case's dropped guns must not be picked up by this carrier
-			SetupCarrierRound(true, true, 1, 0, 0);
+			if (dropping)
+				SetupCarrierRound(true, false, 1, 0, 1); // action drop, nobody to give to
+			else
+				SetupCarrierRound(true, true, 1, 0, 0);
 			int carrier = GetClientOfUserId(g_uidCarrier);
 			if (carrier > 0)
 			{
-				if (c == C_STRIP_ACTIVE || c == C_STRIP_KEEPS)
+				int kind = dropping ? c - C_DROPW_ACTIVE + C_STRIP_ACTIVE : c; // same set-up as the matching strip case
+				if (kind == C_STRIP_ACTIVE || kind == C_STRIP_KEEPS)
 					GivePlayerItem(carrier, "weapon_ak47");
-				if (c == C_STRIP_SECONDARY || c == C_STRIP_KNIFE)
+				if (kind == C_STRIP_SECONDARY || kind == C_STRIP_KNIFE)
 					RemoveSlot(carrier, CS_SLOT_PRIMARY); // a primary dropped by an earlier case may have been picked up
-				if (c == C_STRIP_KNIFE)
+				if (kind == C_STRIP_KNIFE)
 					RemoveSlot(carrier, CS_SLOT_SECONDARY);
-				int hold = GetPlayerWeaponSlot(carrier, c == C_STRIP_KEEPS ? CS_SLOT_SECONDARY : CS_SLOT_C4);
+				int hold = GetPlayerWeaponSlot(carrier, kind == C_STRIP_KEEPS ? CS_SLOT_SECONDARY : CS_SLOT_C4);
 				if (hold != -1)
 					SetEntPropEnt(carrier, Prop_Send, "m_hActiveWeapon", hold);
 			}
@@ -1374,11 +1387,22 @@ void RunStep(int c, int step)
 			EndCase(g_sayCount == 1, g_sayCount == 1 ? "late bomb dropped with one drop message" : why);
 		}
 
-		case C_STRIP_ACTIVE, C_STRIP_SECONDARY, C_STRIP_KNIFE, C_STRIP_KEEPS:
+		case C_STRIP_ACTIVE, C_STRIP_SECONDARY, C_STRIP_KNIFE, C_STRIP_KEEPS, C_DROPW_ACTIVE, C_DROPW_SECONDARY, C_DROPW_KNIFE, C_DROPW_KEEPS:
 		{
-			if (carrier == 0 || other == 0) { EndCase(false, "a fake client is missing"); return; }
-			if (!HasC4(other)) { EndCase(false, "bomb not given to the other T"); return; }
-			int slot = (c == C_STRIP_ACTIVE) ? CS_SLOT_PRIMARY : (c == C_STRIP_SECONDARY || c == C_STRIP_KEEPS) ? CS_SLOT_SECONDARY : CS_SLOT_KNIFE;
+			bool dropping = (c >= C_DROPW_ACTIVE && c <= C_DROPW_KEEPS);
+			int kind = dropping ? c - C_DROPW_ACTIVE + C_STRIP_ACTIVE : c;
+			if (carrier == 0) { EndCase(false, "a fake client is missing"); return; }
+			if (dropping)
+			{
+				if (HasC4(carrier)) { EndCase(false, "bomb still held"); return; }
+				if (!BombOnGround()) { EndCase(false, "bomb is not on the ground"); return; }
+			}
+			else
+			{
+				if (other == 0) { EndCase(false, "a fake client is missing"); return; }
+				if (!HasC4(other)) { EndCase(false, "bomb not given to the other T"); return; }
+			}
+			int slot = (kind == C_STRIP_ACTIVE) ? CS_SLOT_PRIMARY : (kind == C_STRIP_SECONDARY || kind == C_STRIP_KEEPS) ? CS_SLOT_SECONDARY : CS_SLOT_KNIFE;
 			int want = GetPlayerWeaponSlot(carrier, slot);
 			int have = GetEntPropEnt(carrier, Prop_Send, "m_hActiveWeapon");
 			if (have == -1) { EndCase(false, "old carrier left with no active weapon (empty hands)"); return; }
@@ -1391,7 +1415,22 @@ void RunStep(int c, int step)
 				EndCase(false, why);
 				return;
 			}
-			EndCase(true, "old carrier holds the expected weapon");
+			// what the client draws: the view model must show the active weapon
+			int vm = GetEntPropEnt(carrier, Prop_Send, "m_hViewModel", 0);
+			if (vm != -1)
+			{
+				char why[128];
+				int vmWeapon = GetEntPropEnt(vm, Prop_Send, "m_hWeapon");
+				int vmModel = GetEntProp(vm, Prop_Send, "m_nModelIndex");
+				int wModel = GetEntProp(have, Prop_Send, "m_iViewModelIndex");
+				if (vmWeapon != have || vmModel != wModel)
+				{
+					Format(why, sizeof(why), "view model shows weapon %d model %d, active weapon %d expects model %d", vmWeapon, vmModel, have, wModel);
+					EndCase(false, why);
+					return;
+				}
+			}
+			EndCase(true, "old carrier holds the expected weapon, view model shows it");
 		}
 
 		case C_ACTION_CT_ONLY:

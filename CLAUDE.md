@@ -11,7 +11,7 @@ for Counter-Strike: Source. Goal: verify it still works on the current game buil
 - `tests/afkbomb_tests.sp` — regression suite plugin (`afkbomb_test` on the server console)
 - `test.ps1` — build, deploy, run the suite on a fresh srcds, then scan `afkbomb_tests.log`, SourceMod
   `L*.log`/`errors_*.log` and `console.log` for errors; exit code 0 = clean. `-WithClient` also launches the
-  CS:S client so the three real-client cases run; `-InjectError` proves the error detection (must fail);
+  CS:S client so the five real-client cases run; `-InjectError` proves the error detection (must fail);
   `-ScanOnly` scans the current logs without running anything.
 
 ## Test server

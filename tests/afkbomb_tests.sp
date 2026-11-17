@@ -63,6 +63,7 @@ enum
 	C_DISABLED,
 	C_DISABLE_MID,
 	C_DISABLE_LATE,
+	C_DISABLE_TOGGLE,
 	C_REENABLE,
 	C_FREEZETIME_DELAY,
 	C_FREEZE_PRE_ACTIVITY,
@@ -206,6 +207,7 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_ACTION_CT_ONLY], NAME_LEN, "action=0 never gives bomb to an active CT, drops it");
 	strcopy(g_caseNames[C_DISABLE_MID], NAME_LEN, "afkbomb=0 set mid-check cancels drop");
 	strcopy(g_caseNames[C_DISABLE_LATE], NAME_LEN, "afkbomb=0 set during late checks stops them");
+	strcopy(g_caseNames[C_DISABLE_TOGGLE], NAME_LEN, "afkbomb=0 then positive mid-check: no drop in that round");
 	strcopy(g_caseNames[C_REENABLE], NAME_LEN, "afkbomb back to 1 takes effect from the next round");
 	strcopy(g_caseNames[C_MSG_ON], NAME_LEN, "afkbomb_msg=1 says once on drop");
 	strcopy(g_caseNames[C_MSG_OFF], NAME_LEN, "afkbomb_msg=0 stays silent");
@@ -767,7 +769,7 @@ void StartCase(int c)
 			Schedule(2.5, c, 2);
 		}
 
-		case C_EYE_MOVED, C_MONEY_CHANGED, C_DISABLE_MID:
+		case C_EYE_MOVED, C_MONEY_CHANGED, C_DISABLE_MID, C_DISABLE_TOGGLE:
 		{
 			SetupCarrierRound(true, false, 1, 0, 1);
 			Schedule(1.5, c, 1); // between first (1.0s) and second (2.0s) scan
@@ -818,6 +820,7 @@ void StartCase(int c)
 		{
 			// "other" is far and will be moving at the check, "extra" is close and active but stationary
 			SetupCarrierRound(true, true, 1, 0, 0, 1.0, -1.0);
+			if (!g_caseActive) return; // setup failed and ended the case
 			int still = SpawnFake("AFKTest Still", CS_TEAM_T, false);
 			if (still == 0) { EndCase(false, "could not create fake client"); return; }
 			g_uidExtra = GetClientUserId(still);
@@ -830,6 +833,7 @@ void StartCase(int c)
 		case C_RECV_ACTIVE_OVER_AFK:
 		{
 			SetupCarrierRound(true, true, 1, 0, 0); // "other" becomes active at 1.5s
+			if (!g_caseActive) return; // setup failed and ended the case
 			int idle = SpawnFake("AFKTest Idle", CS_TEAM_T, false);
 			if (idle == 0) { EndCase(false, "could not create fake client"); return; }
 			g_uidExtra = GetClientUserId(idle);
@@ -840,6 +844,7 @@ void StartCase(int c)
 		case C_RECV_CLOSEST:
 		{
 			SetupCarrierRound(true, true, 1, 0, 0, 1.0, -1.0);
+			if (!g_caseActive) return; // setup failed and ended the case
 			int far = SpawnFake("AFKTest Far", CS_TEAM_T, false);
 			if (far == 0) { EndCase(false, "could not create fake client"); return; }
 			g_uidExtra = GetClientUserId(far);
@@ -1444,6 +1449,7 @@ void RunStep(int c, int step)
 
 		case C_HUMAN_GIVE_MSG:
 		{
+			if (carrier == 0) { EndCase(false, "real client left"); return; }
 			if (step == 2) { EndCase(CheckGiveColours(carrier), g_colourWhy); return; } // the receiver is idle too and may drop it again by now
 			if (carrier == 0 || other == 0) { EndCase(false, "a client is missing"); return; }
 			if (HasC4(carrier)) { EndCase(false, "idle real client kept the bomb (was the client being played?)"); return; }
@@ -1459,7 +1465,7 @@ void RunStep(int c, int step)
 			Schedule(2.0, c, 2); // let the client write the line to its console.log
 		}
 
-		case C_EYE_MOVED, C_MONEY_CHANGED, C_DISABLE_MID:
+		case C_EYE_MOVED, C_MONEY_CHANGED, C_DISABLE_MID, C_DISABLE_TOGGLE:
 		{
 			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
 			if (step == 1)
@@ -1474,7 +1480,11 @@ void RunStep(int c, int step)
 				else if (c == C_MONEY_CHANGED)
 					SetEntProp(carrier, Prop_Send, "m_iAccount", GetEntProp(carrier, Prop_Send, "m_iAccount") + MONEY_CHANGE);
 				else
+				{
 					SetCvarInt("afkbomb", 0);
+					if (c == C_DISABLE_TOGGLE)
+						SetCvarInt("afkbomb", 1); // back on before the pending check fires: still cancelled
+				}
 				return;
 			}
 			if (!HasC4(carrier)) { EndCase(false, "bomb was dropped anyway"); return; }

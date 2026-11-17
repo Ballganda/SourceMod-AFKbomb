@@ -37,7 +37,7 @@ public Plugin:myinfo =
 {
 	name = "Afk Bomb",
 	author = "RedSword / Bob Le Ponge, BallGanda",
-	description = "Drop the bomb if the player appears afk. Also possible to give to a random T since 1.4.0.",
+	description = "Drop the bomb if the player appears afk. Also possible to give to an active T since 1.4.0.",
 	version = PLUGIN_VERSION,
 	url = "http://www.sourcemod.net/"
 };
@@ -51,7 +51,7 @@ new Handle:g_afkBomb_displayMsg;
 
 new Handle:g_afkBomb_lateCheckNumber; // 0 = late check disabled
 new Handle:g_afkBomb_lateCheckDelay; // 0 = late check disabled
-new Handle:g_afkBomb_lateCheckAction; //since 1.5; 1=drop, 0=givetorandomT
+new Handle:g_afkBomb_lateCheckAction; //since 1.5; 1=drop, 0=give to an active T
 
 //Check-generation token : advanced at round start and when the bomb is planted; a pending check that carries an older value is dropped
 //Avoid a possible (rare) glitch where the same player would spawn with the bomb at the same place with a high CVar "afkbomb" value
@@ -75,8 +75,8 @@ new Float:g_snapVelocity[ MAXPLAYERS + 1 ][ 3 ]; // GetEntPropVector()
 //in a state different from the snapshot)
 new bool:g_isAfk[ MAXPLAYERS + 1 ];
 
-//Decided once at round start : is this round checked ? (a later change of afkbomb does not start a check;
-//afkbomb 0 still cancels a running one)
+//Decided once at round start : is this round checked ? (a later change of afkbomb does not start a check)
+//afkbomb 0 ends the round's checks for good (OnAfkBombChanged) : raising it again only counts from the next round
 new bool:g_roundChecked;
 
 //Prevent re-running a function
@@ -101,11 +101,11 @@ public OnPluginStart()
 	g_afkBomb_addFreeze = CreateConVar( "afkbomb_freezetime", "0", "DEPRECATED since 1.5.1, ignored : checks now always start when freezetime ends. Def. 0.",
 		FCVAR_PLUGIN | FCVAR_NOTIFY, true, 0.0, true, 1.0 );
 	g_afkBomb_action = CreateConVar( "afkbomb_action", "0",
-	"What to do when someone is considered afk at the beginning of a round. 1=Drop. 0=Give to random player. Def. 0.",
+	"What to do when someone is considered afk at the beginning of a round. 1=Drop. 0=Give to an active teammate (dropped if there is none). Def. 0.",
 		FCVAR_PLUGIN | FCVAR_NOTIFY, true, 0.0, true, 1.0 );
 
 	g_afkBomb_displayMsg = CreateConVar( "afkbomb_msg", "1",
-		"Notify team when bomb is dropped (action or latecheckaction = 1) / Notify everyone when bomb is given to a random terrorist (action or latecheckaction = 0). 0 = no, 1 = yes. Def. 1.",
+		"Notify team when bomb is dropped (action or latecheckaction = 1) / Notify everyone when bomb is given to an active terrorist (action or latecheckaction = 0). 0 = no, 1 = yes. Def. 1.",
 		FCVAR_PLUGIN | FCVAR_NOTIFY, true, 0.0, true, 1.0 );
 
 	g_afkBomb_lateCheckNumber = CreateConVar( "afkbomb_latecheck", "2", "Number of latechecks to do before dropping the bomb. 0 = disabled. Def. 2.",
@@ -113,7 +113,7 @@ public OnPluginStart()
 	g_afkBomb_lateCheckDelay = CreateConVar( "afkbomb_latecheckdelay", "5.0", "Time between 2 latechecks to drop the bomb, in seconds. Min. 1. Def. 5.",
 		FCVAR_PLUGIN | FCVAR_NOTIFY, true, 1.0 );
 	g_afkBomb_lateCheckAction = CreateConVar( "afkbomb_latecheckaction", "1",
-	"What to do when someone is considered afk after the beginning of a round. 1=Drop. 0=Give to random player (not recommended since it could be exploited). Def. 1.",
+	"What to do when someone is considered afk after the beginning of a round. 1=Drop. 0=Give to an active teammate, dropped if there is none (not recommended since it could be exploited). Def. 1.",
 		FCVAR_PLUGIN | FCVAR_NOTIFY, true, 0.0, true, 1.0 );
 
 	//Settings file : every cvar but the version one (applied in OnConfigsExecuted)
@@ -125,6 +125,9 @@ public OnPluginStart()
 	InstCfg_Add( g_afkBomb_lateCheckDelay );
 	InstCfg_Add( g_afkBomb_lateCheckAction );
 	InstCfg_Ensure();
+
+	//afkbomb 0 cancels the running checks at once, not only when their timer fires
+	HookConVarChange( g_afkBomb, OnAfkBombChanged );
 
 	//Hooks on events
 	HookEvent( "round_start", Event_RoundStart );
@@ -147,6 +150,17 @@ public OnPluginStart()
 public OnConfigsExecuted()
 {
 	InstCfg_Apply();
+}
+
+//afkbomb set to 0 : every pending check of this round is dropped and the round stays unchecked,
+//so setting it back to a positive value takes effect from the next round only
+public OnAfkBombChanged( Handle:convar, const String:oldValue[], const String:newValue[] )
+{
+	if ( GetConVarInt( convar ) < 1 )
+	{
+		++g_checkGeneration;
+		g_roundChecked = false;
+	}
 }
 
 public OnClientPutInServer( client )

@@ -143,6 +143,7 @@ bool g_selfFire;       // true while we fire our own round_start
 bool g_interfered;     // the game restarted the round during this attempt
 int g_attempt;         // attempt number of the current case (1..MAX_ATTEMPTS)
 int g_origIgnoreWin = -1;
+int g_origAutokick = -1;
 int g_sayCount;        // say_team messages from the carrier during the case
 char g_lastSay[192];
 
@@ -433,6 +434,13 @@ public Action Cmd_RunTests(int args)
 	{
 		g_origIgnoreWin = ignore.IntValue;
 		ignore.IntValue = 1;
+	}
+	// The real client is idle on purpose; over the suite's many rounds the game would kick it for idling.
+	ConVar autokick = FindConVar("mp_autokick");
+	if (autokick != null)
+	{
+		g_origAutokick = autokick.IntValue;
+		autokick.IntValue = 0;
 	}
 
 	g_running = true;
@@ -2329,6 +2337,11 @@ void ResetCvars()
 	{
 		SetCvarInt("mp_ignore_round_win_conditions", g_origIgnoreWin);
 		g_origIgnoreWin = -1;
+	}
+	if (!g_running && g_origAutokick != -1)
+	{
+		SetCvarInt("mp_autokick", g_origAutokick);
+		g_origAutokick = -1;
 	}
 }
 

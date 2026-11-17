@@ -15,7 +15,9 @@ $out = Join-Path $PSScriptRoot 'plugins'
 New-Item -ItemType Directory -Force $out | Out-Null
 
 $failed = 0
-foreach ($sp in Get-ChildItem $src -Filter *.sp) {
+# scripting\*.sp = the plugin; tests\*.sp = regression plugins (run `afkbomb_test` on the server)
+$targets = @(Get-ChildItem $src -Filter *.sp) + @(Get-ChildItem (Join-Path $PSScriptRoot 'tests') -Filter *.sp -ErrorAction SilentlyContinue)
+foreach ($sp in $targets) {
     $smx = Join-Path $out ($sp.BaseName + '.smx')
     & $spcomp $sp.FullName "-i$src\include" "-i$SourceModDir\scripting\include" "-o$smx"
     if ($LASTEXITCODE -ne 0) { $failed++; continue }

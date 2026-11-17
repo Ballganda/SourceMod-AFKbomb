@@ -1,0 +1,1098 @@
+/**
+	AFK Bomb regression tests.
+
+	Runs on the test server. Load it with afkbomb.smx, then run `afkbomb_test`
+	from the server console (or RCON). Uses AI-less fake clients (CreateFakeClient),
+	which stand still, so the AFK check sees an unchanged state.
+
+	Each case fires a round_start event (CreateEvent/Fire) so the plugin's real
+	round logic runs. Results go to the console and to
+	addons/sourcemod/logs/afkbomb_tests.log.
+
+	A case also fails if SourceMod's errors_*.log grew while it ran, and a
+	[WARN] line is logged if the game fired its own round_start mid-case.
+	Unattended: test.ps1 in the repo root (builds, runs the suite, scans all logs).
+*/
+#pragma semicolon 1
+#pragma newdecls required
+
+#include <sourcemod>
+#include <sdktools>
+#include <cstrike>
+
+#define PLUGIN_VERSION "1.1.0"
+#define MAX_FAKE 4
+#define NAME_LEN 64
+#define MAX_ATTEMPTS 3 // a case is rerun if the game restarted the round under it
+#define MAX_STEP 99 // timer data = case * 100 + step
+
+enum
+{
+	C_LOADED = 0,
+	C_TRANSLATIONS,
+	C_CLAMP,
+	C_DROP_STILL,
+	C_DROP_MOVING,
+	C_EYE_MOVED,
+	C_MONEY_CHANGED,
+	C_SELF_DROP,
+	C_ACTION_GIVE,
+	C_GIVE_NO_BOUNCE,
+	C_GIVE_PREFERS_MOVING,
+	C_STRIP_ACTIVE,
+	C_ACTION_LONE,
+	C_ACTION_CT_ONLY,
+	C_DISABLED,
+	C_DISABLE_MID,
+	C_FREEZETIME_DELAY,
+	C_MSG_ON,
+	C_MSG_OFF,
+	C_ROUND_RESTART,
+	C_LATE_DROP,
+	C_LATE_COUNT,
+	C_LATE_GIVE,
+	C_LATE_NONE,
+	C_DEAD_CARRIER,
+	C_DISCONNECT,
+	C_HUMAN_DROP,     // the last two need a real client connected; skipped otherwise
+	C_HUMAN_GIVE_MSG,
+	NUM_CASES
+};
+
+char g_caseNames[NUM_CASES][NAME_LEN];
+
+int g_curCase = -1;
+bool g_caseActive;
+bool g_running;
+int g_pass;
+int g_fail;
+int g_skip;
+int g_chatSeen;      // chat usermessages carrying the "given to a random terrorist" text
+int g_waited;        // seconds spent waiting for a real client
+
+int g_fakeUids[MAX_FAKE];
+int g_fakeCount;
+int g_uidCarrier; // userid of the bomb carrier
+int g_uidOther;   // userid of the second terrorist (action tests)
+int g_uidExtra;   // userid of a third fake client (still T, or a CT)
+
+int g_errSizeAtStart;  // size of SM's errors log when the case started
+bool g_selfFire;       // true while we fire our own round_start
+bool g_interfered;     // the game restarted the round during this attempt
+int g_attempt;         // attempt number of the current case (1..MAX_ATTEMPTS)
+int g_origIgnoreWin = -1;
+int g_sayCount;        // say_team messages from the carrier during the case
+char g_lastSay[192];
+
+float g_origFreezetime;
+ConVar g_cvAutorun;
+char g_logPath[PLATFORM_MAX_PATH];
+ConVar g_cvInjectError;
+ConVar g_cvWaitClient;
+
+public Plugin myinfo =
+{
+	name = "AFK Bomb Tests",
+	author = "BallGanda",
+	description = "Regression tests for afkbomb.smx (run afkbomb_test on the test server)",
+	version = PLUGIN_VERSION,
+	url = ""
+};
+
+public void OnPluginStart()
+{
+	BuildPath(Path_SM, g_logPath, sizeof(g_logPath), "logs/afkbomb_tests.log");
+
+	strcopy(g_caseNames[C_LOADED], NAME_LEN, "plugin running, all cvars exist");
+	strcopy(g_caseNames[C_TRANSLATIONS], NAME_LEN, "translation phrases load and format");
+	strcopy(g_caseNames[C_EYE_MOVED], NAME_LEN, "carrier who looked around keeps bomb");
+	strcopy(g_caseNames[C_MONEY_CHANGED], NAME_LEN, "carrier who spent money keeps bomb");
+	strcopy(g_caseNames[C_SELF_DROP], NAME_LEN, "carrier drops bomb himself mid-check");
+	strcopy(g_caseNames[C_GIVE_NO_BOUNCE], NAME_LEN, "action=0 never hands bomb back to the AFK");
+	strcopy(g_caseNames[C_GIVE_PREFERS_MOVING], NAME_LEN, "action=0 prefers a moving T");
+	strcopy(g_caseNames[C_STRIP_ACTIVE], NAME_LEN, "action=0 strip while holding C4");
+	strcopy(g_caseNames[C_ACTION_CT_ONLY], NAME_LEN, "action=0 never gives bomb to a CT");
+	strcopy(g_caseNames[C_DISABLE_MID], NAME_LEN, "afkbomb=0 set mid-check cancels drop");
+	strcopy(g_caseNames[C_MSG_ON], NAME_LEN, "afkbomb_msg=1 says once on drop");
+	strcopy(g_caseNames[C_MSG_OFF], NAME_LEN, "afkbomb_msg=0 stays silent");
+	strcopy(g_caseNames[C_ROUND_RESTART], NAME_LEN, "new round cancels old round's check");
+	strcopy(g_caseNames[C_LATE_COUNT], NAME_LEN, "latecheck=3 waits for 3 checks");
+	strcopy(g_caseNames[C_LATE_GIVE], NAME_LEN, "latecheckaction=0 gives late bomb away");
+	strcopy(g_caseNames[C_HUMAN_DROP], NAME_LEN, "real client: AFK human loses bomb");
+	strcopy(g_caseNames[C_HUMAN_GIVE_MSG], NAME_LEN, "real client: give message reaches chat");
+	strcopy(g_caseNames[C_CLAMP], NAME_LEN, "cvar bounds clamped");
+	strcopy(g_caseNames[C_DROP_STILL], NAME_LEN, "stationary carrier loses bomb");
+	strcopy(g_caseNames[C_DROP_MOVING], NAME_LEN, "moved carrier keeps bomb");
+	strcopy(g_caseNames[C_ACTION_GIVE], NAME_LEN, "action=0 gives bomb to other T");
+	strcopy(g_caseNames[C_ACTION_LONE], NAME_LEN, "action=0 with no other T keeps bomb");
+	strcopy(g_caseNames[C_DISABLED], NAME_LEN, "afkbomb=0 never drops");
+	strcopy(g_caseNames[C_FREEZETIME_DELAY], NAME_LEN, "freezetime delays the drop");
+	strcopy(g_caseNames[C_LATE_DROP], NAME_LEN, "late carrier dropped after latechecks");
+	strcopy(g_caseNames[C_LATE_NONE], NAME_LEN, "latecheck=0 ignores late carrier");
+	strcopy(g_caseNames[C_DEAD_CARRIER], NAME_LEN, "dead carrier not given to other T");
+	strcopy(g_caseNames[C_DISCONNECT], NAME_LEN, "disconnect mid-check is safe");
+
+	ConVar cv = FindConVar("mp_freezetime");
+	g_origFreezetime = (cv != null) ? cv.FloatValue : 15.0;
+
+	RegServerCmd("afkbomb_test", Cmd_RunTests, "Run the AFK Bomb regression tests");
+
+	// Unattended mode: +afkbomb_test_autorun 1 runs the suite after the first map loads,
+	// then quits the server. Results are in logs/afkbomb_tests.log.
+	g_cvAutorun = CreateConVar("afkbomb_test_autorun", "0", "Run the suite on map start and quit when done (automation).", FCVAR_NONE, true, 0.0, true, 1.0);
+	// Proves the error detection works: logs a deliberate SourceMod error in the first case.
+	g_cvInjectError = CreateConVar("afkbomb_test_inject_error", "0", "Log a deliberate error (checks that error detection works).", FCVAR_NONE, true, 0.0, true, 1.0);
+
+	// With +afkbomb_test_wait_client 1 the autorun waits (up to 3 minutes) for a real client to be in game.
+	g_cvWaitClient = CreateConVar("afkbomb_test_wait_client", "0", "Autorun waits for a real client before starting.", FCVAR_NONE, true, 0.0, true, 1.0);
+
+	// PrintToChat* only reaches real clients; watch the chat usermessages to see what they are sent.
+	static const char chatMsgs[][] = { "SayText", "SayText2", "TextMsg" };
+	for (int i = 0; i < sizeof(chatMsgs); i++)
+	{
+		UserMsg id = GetUserMessageId(chatMsgs[i]);
+		if (id != INVALID_MESSAGE_ID)
+			HookUserMessage(id, OnChatMsg);
+	}
+
+	AddCommandListener(OnSayTeam, "say_team");
+	HookEvent("round_start", OnRoundStartSeen, EventHookMode_PostNoCopy);
+}
+
+public Action OnChatMsg(UserMsg id, BfRead bf, const int[] players, int playersNum, bool reliable, bool init)
+{
+	if (!g_caseActive)
+		return Plugin_Continue;
+
+	// The layout differs per message type, so scan the raw payload for the phrase.
+	char raw[256];
+	int n = 0;
+	while (bf.BytesLeft > 0 && n < sizeof(raw) - 1)
+	{
+		int b = bf.ReadByte();
+		raw[n++] = view_as<char>((b == 0) ? 32 : b);
+	}
+	raw[n] = '\0';
+	if (StrContains(raw, "seems to be afk with the bomb") != -1)
+		g_chatSeen++;
+	return Plugin_Continue;
+}
+
+int FindHuman()
+{
+	for (int i = 1; i <= MaxClients; i++)
+		if (IsClientInGame(i) && !IsFakeClient(i) && !IsClientSourceTV(i))
+			return i;
+	return 0;
+}
+
+// Puts the real client on T as the bomb carrier. It is not being played, so it is a genuine AFK player.
+bool SetupHumanCarrier()
+{
+	int h = FindHuman();
+	if (h == 0)
+		return false;
+	ChangeClientTeam(h, CS_TEAM_T);
+	CS_RespawnPlayer(h);
+	PlaceApart(h, CS_TEAM_T);
+	GivePlayerItem(h, "weapon_c4");
+	g_uidCarrier = GetClientUserId(h);
+	return true;
+}
+
+public Action OnSayTeam(int client, const char[] command, int argc)
+{
+	if (g_caseActive && client > 0 && GetClientUserId(client) == g_uidCarrier)
+	{
+		g_sayCount++;
+		GetCmdArgString(g_lastSay, sizeof(g_lastSay));
+	}
+	return Plugin_Continue;
+}
+
+// A round_start we did not fire means the game restarted the round under the case.
+public void OnRoundStartSeen(Event event, const char[] name, bool dontBroadcast)
+{
+	if (g_running && g_caseActive && !g_selfFire)
+		g_interfered = true;
+}
+
+public void OnMapStart()
+{
+	if (g_cvAutorun.BoolValue && !g_running)
+		CreateTimer(15.0, Timer_Autorun, _, TIMER_FLAG_NO_MAPCHANGE);
+}
+
+public Action Timer_Autorun(Handle timer)
+{
+	if (g_cvWaitClient.BoolValue && FindHuman() == 0 && g_waited < 180)
+	{
+		if (g_waited == 0)
+			PrintToServer("[afkbomb_test] waiting for a real client to join...");
+		g_waited += 2;
+		CreateTimer(2.0, Timer_Autorun, _, TIMER_FLAG_NO_MAPCHANGE);
+		return Plugin_Stop;
+	}
+	if (g_cvWaitClient.BoolValue && g_waited >= 0 && FindHuman() != 0)
+	{
+		g_waited = -1; // give the client a few seconds to finish loading in
+		CreateTimer(8.0, Timer_Autorun, _, TIMER_FLAG_NO_MAPCHANGE);
+		return Plugin_Stop;
+	}
+	Cmd_RunTests(0);
+	return Plugin_Stop;
+}
+
+public void OnPluginEnd()
+{
+	CleanupFakes();
+	g_running = false;
+	ResetCvars();
+}
+
+public Action Cmd_RunTests(int args)
+{
+	if (g_running)
+	{
+		PrintToServer("[afkbomb_test] already running");
+		return Plugin_Handled;
+	}
+	if (FindPluginByFile("afkbomb.smx") == null)
+	{
+		PrintToServer("[afkbomb_test] afkbomb.smx is not loaded; aborting");
+		return Plugin_Handled;
+	}
+
+	// Fake clients joining and leaving would otherwise end the round and restart it under a later case.
+	ConVar ignore = FindConVar("mp_ignore_round_win_conditions");
+	if (ignore != null)
+	{
+		g_origIgnoreWin = ignore.IntValue;
+		ignore.IntValue = 1;
+	}
+
+	g_running = true;
+	g_attempt = 1;
+	g_pass = 0;
+	g_fail = 0;
+	g_skip = 0;
+	ParkHuman();
+	LogToFileEx(g_logPath, "=== AFK Bomb tests started (%d cases) ===", NUM_CASES);
+	PrintToServer("[afkbomb_test] running %d cases (about 2 minutes)", NUM_CASES);
+	StartCase(0);
+	return Plugin_Handled;
+}
+
+//===== Case control =====
+
+void StartCase(int c)
+{
+	g_curCase = c;
+	g_caseActive = true;
+	g_uidCarrier = 0;
+	g_uidOther = 0;
+	g_uidExtra = 0;
+	g_sayCount = 0;
+	g_chatSeen = 0;
+	g_interfered = false;
+	g_lastSay[0] = '\0';
+	g_errSizeAtStart = ErrorLogSize();
+	ResetCvars();
+
+	switch (c)
+	{
+		case C_LOADED:
+		{
+			if (g_cvInjectError.BoolValue)
+				LogError("deliberate error injected by afkbomb_test_inject_error");
+
+			static const char cvars[][] = { "afkbombversion", "afkbomb", "afkbomb_freezetime", "afkbomb_action",
+				"afkbomb_msg", "afkbomb_latecheck", "afkbomb_latecheckdelay", "afkbomb_latecheckaction" };
+			for (int i = 0; i < sizeof(cvars); i++)
+			{
+				if (FindConVar(cvars[i]) == null)
+				{
+					char why[96];
+					Format(why, sizeof(why), "cvar %s does not exist", cvars[i]);
+					EndCase(false, why);
+					return;
+				}
+			}
+			bool ok = GetPluginStatus(FindPluginByFile("afkbomb.smx")) == Plugin_Running;
+			EndCase(ok, ok ? "running with 8 cvars" : "afkbomb.smx is not in the Running state");
+		}
+
+		case C_TRANSLATIONS:
+		{
+			char path[PLATFORM_MAX_PATH];
+			BuildPath(Path_SM, path, sizeof(path), "translations/afkbomb.phrases.txt");
+			if (!FileExists(path)) { EndCase(false, "translations/afkbomb.phrases.txt is not deployed"); return; }
+			LoadTranslations("afkbomb.phrases");
+			if (!TranslationPhraseExists("Drop Bomb") || !TranslationPhraseExists("StripNGive Bomb"))
+				{ EndCase(false, "a phrase is missing"); return; }
+
+			// PrintToChatAll skips fake clients, so format the give message here with a real client index.
+			int dummy = SpawnFake("AFKTest Name", CS_TEAM_T, false);
+			if (dummy == 0) { EndCase(false, "could not create fake client"); return; }
+			char buf[256];
+			Format(buf, sizeof(buf), "%T", "StripNGive Bomb", LANG_SERVER, "<", dummy, ">");
+			bool ok = StrContains(buf, "<AFKTest Name >") == 0;
+			if (ok)
+			{
+				Format(buf, sizeof(buf), "%T", "Drop Bomb", LANG_SERVER);
+				ok = buf[0] != '\0';
+			}
+			EndCase(ok, ok ? "both phrases format" : "phrase did not format as expected");
+		}
+
+		case C_CLAMP:
+		{
+			SetCvarInt("afkbomb", -5);
+			SetCvarInt("afkbomb_freezetime", 7);
+			SetCvarInt("afkbomb_action", 5);
+			SetCvarInt("afkbomb_msg", -1);
+			SetCvarInt("afkbomb_latecheck", -3);
+			SetCvarFloat("afkbomb_latecheckdelay", 0.1);
+			SetCvarInt("afkbomb_latecheckaction", 9);
+
+			bool ok = GetCvarInt("afkbomb") == 0
+				&& GetCvarInt("afkbomb_freezetime") == 1
+				&& GetCvarInt("afkbomb_action") == 1
+				&& GetCvarInt("afkbomb_msg") == 0
+				&& GetCvarInt("afkbomb_latecheck") == 0
+				&& GetCvarFloat("afkbomb_latecheckdelay") == 1.0
+				&& GetCvarInt("afkbomb_latecheckaction") == 1;
+			EndCase(ok, ok ? "all out-of-range values clamped" : "a cvar was not clamped to its bounds");
+		}
+
+		case C_HUMAN_DROP:
+		{
+			if (!SetupHumanCarrier()) { SkipCase("no real client connected"); return; }
+			SetupCarrierRound(false, false, 1, 0, 1);
+			Schedule(2.5, c, 1);
+		}
+
+		case C_HUMAN_GIVE_MSG:
+		{
+			if (!SetupHumanCarrier()) { SkipCase("no real client connected"); return; }
+			SetupCarrierRound(false, true, 1, 0, 0);
+			Schedule(2.5, c, 1);
+		}
+
+		case C_DROP_STILL:
+		{
+			SetupCarrierRound(true, false, 1, 0, 1);
+			Schedule(3.5, c, 1);
+		}
+
+		case C_DROP_MOVING:
+		{
+			SetupCarrierRound(true, false, 1, 0, 1);
+			Schedule(1.5, c, 1); // after first scan (1.0s), before second scan
+			Schedule(2.5, c, 2);
+		}
+
+		case C_EYE_MOVED, C_MONEY_CHANGED, C_DISABLE_MID:
+		{
+			SetupCarrierRound(true, false, 1, 0, 1);
+			Schedule(1.5, c, 1); // between first (1.0s) and second (2.0s) scan
+			Schedule(2.5, c, 2);
+		}
+
+		case C_SELF_DROP:
+		{
+			SetupCarrierRound(true, false, 1, 2, 1);
+			SetCvarFloat("afkbomb_latecheckdelay", 1.0);
+			Schedule(1.5, c, 1);
+			Schedule(3.5, c, 2);
+		}
+
+		case C_ACTION_GIVE:
+		{
+			SetupCarrierRound(true, true, 1, 0, 0);
+			Schedule(2.5, c, 1); // scans at 1.0s and 2.0s
+		}
+
+		case C_GIVE_NO_BOUNCE:
+		{
+			SetupCarrierRound(true, true, 1, 0, 0);
+			Schedule(3.5, c, 1); // the receiver is scanned at 2.0s and 3.0s
+			Schedule(4.5, c, 2);
+		}
+
+		case C_GIVE_PREFERS_MOVING:
+		{
+			// carrier + two still Ts + one moving T; a random pick would hit the mover 1 time in 3
+			int still = SpawnFake("AFKTest Still", CS_TEAM_T, false);
+			if (still == 0) { EndCase(false, "could not create fake client"); return; }
+			g_uidExtra = GetClientUserId(still);
+			SetupCarrierRound(true, true, 1, 0, 0);
+			int still2 = SpawnFake("AFKTest Still2", CS_TEAM_T, false);
+			if (still2 == 0) { EndCase(false, "could not create fake client"); return; }
+			Schedule(1.95, c, 1); // push "other" just before the second scan (2.0s)
+			Schedule(2.5, c, 2);
+		}
+
+		case C_STRIP_ACTIVE:
+		{
+			SetupCarrierRound(true, true, 1, 0, 0);
+			int carrier = GetClientOfUserId(g_uidCarrier);
+			if (carrier > 0)
+			{
+				int c4 = GetPlayerWeaponSlot(carrier, CS_SLOT_C4);
+				if (c4 != -1)
+					SetEntPropEnt(carrier, Prop_Send, "m_hActiveWeapon", c4);
+			}
+			Schedule(2.5, c, 1);
+		}
+
+		case C_ACTION_CT_ONLY:
+		{
+			int ct = SpawnFake("AFKTest CT", CS_TEAM_CT, false);
+			if (ct == 0) { EndCase(false, "could not create CT fake client"); return; }
+			g_uidExtra = GetClientUserId(ct);
+			SetupCarrierRound(true, false, 1, 0, 0);
+			Schedule(3.5, c, 1);
+		}
+
+		case C_MSG_ON, C_MSG_OFF:
+		{
+			SetupCarrierRound(true, false, 1, 0, 1);
+			SetCvarInt("afkbomb_msg", (c == C_MSG_ON) ? 1 : 0);
+			Schedule(4.5, c, 1); // drop at 2.0s, re-scan at 3.5s must not repeat the message
+		}
+
+		case C_ROUND_RESTART:
+		{
+			SetupCarrierRound(true, false, 3, 0, 1); // scans at 1.0s and 4.0s
+			Schedule(2.0, c, 1); // new round: scans move to 3.0s and 6.0s
+			Schedule(4.5, c, 2);
+			Schedule(6.5, c, 3);
+		}
+
+		case C_LATE_COUNT:
+		{
+			SetupCarrierRound(false, false, 1, 3, 1);
+			SetCvarFloat("afkbomb_latecheckdelay", 1.0);
+			Schedule(1.2, c, 1); // found at 2.0s; checks at 3.0, 4.0, 5.0s
+			Schedule(4.5, c, 2);
+			Schedule(5.5, c, 3);
+		}
+
+		case C_LATE_GIVE:
+		{
+			SetupCarrierRound(false, true, 1, 2, 1);
+			SetCvarFloat("afkbomb_latecheckdelay", 1.0);
+			SetCvarInt("afkbomb_latecheckaction", 0);
+			Schedule(1.2, c, 1); // found at 2.0s; checks at 3.0, 4.0s
+			Schedule(4.5, c, 2);
+		}
+
+		case C_ACTION_LONE:
+		{
+			SetupCarrierRound(true, false, 1, 0, 0);
+			Schedule(3.5, c, 1);
+		}
+
+		case C_DISABLED:
+		{
+			SetupCarrierRound(true, false, 0, 0, 1);
+			Schedule(3.5, c, 1);
+		}
+
+		case C_FREEZETIME_DELAY:
+		{
+			SetCvarInt("afkbomb_freezetime", 1);
+			SetCvarFloat("mp_freezetime", 4.0);
+			SetupCarrierRound(true, false, 1, 0, 1);
+			Schedule(3.0, c, 1); // drop expected at ~6.0s (1s + 4s freezetime + 1s)
+			Schedule(7.5, c, 2);
+		}
+
+		case C_LATE_DROP:
+		{
+			SetupCarrierRound(false, false, 1, 2, 1);
+			SetCvarFloat("afkbomb_latecheckdelay", 1.0);
+			Schedule(1.2, c, 1); // first check (1.0s) found nobody; carrier appears now
+			Schedule(5.7, c, 2);
+		}
+
+		case C_LATE_NONE:
+		{
+			SetupCarrierRound(false, false, 1, 0, 1);
+			Schedule(1.2, c, 1);
+			Schedule(4.5, c, 2);
+		}
+
+		case C_DEAD_CARRIER:
+		{
+			SetupCarrierRound(true, true, 1, 0, 0);
+			Schedule(1.2, c, 1); // dies between first (1.0s) and second (2.0s) scan
+			Schedule(3.5, c, 2);
+		}
+
+		case C_DISCONNECT:
+		{
+			SetupCarrierRound(true, false, 1, 0, 1);
+			Schedule(1.5, c, 1); // carrier leaves between scans
+			Schedule(3.0, c, 2);
+		}
+	}
+}
+
+// Creates the carrier (optionally with a second idle T), sets cvars, and fires round_start.
+// withCarrier=false: no bomb yet (late-check cases spawn the carrier later).
+void SetupCarrierRound(bool withCarrier, bool withOther, int afkbomb, int latecheck, int action)
+{
+	SetCvarInt("afkbomb", afkbomb);
+	SetCvarInt("afkbomb_latecheck", latecheck);
+	SetCvarInt("afkbomb_action", action);
+
+	if (withCarrier)
+	{
+		int carrier = SpawnFake("AFKTest Carrier", CS_TEAM_T, true);
+		if (carrier == 0)
+		{
+			EndCase(false, "could not create carrier fake client");
+			return;
+		}
+		g_uidCarrier = GetClientUserId(carrier);
+	}
+	if (withOther)
+	{
+		int other = SpawnFake("AFKTest Other", CS_TEAM_T, false);
+		if (other == 0)
+		{
+			EndCase(false, "could not create second fake client");
+			return;
+		}
+		g_uidOther = GetClientUserId(other);
+	}
+	FireRoundStart();
+}
+
+void Schedule(float delay, int c, int step)
+{
+	CreateTimer(delay, Timer_Step, c * 100 + step, TIMER_FLAG_NO_MAPCHANGE);
+}
+
+public Action Timer_Step(Handle timer, any data)
+{
+	int code = view_as<int>(data);
+	int c = code / 100;
+	int step = code % 100;
+	if (step > MAX_STEP || !g_caseActive || c != g_curCase)
+		return Plugin_Stop; // stale timer from a finished case
+	RunStep(c, step);
+	return Plugin_Stop;
+}
+
+void RunStep(int c, int step)
+{
+	int carrier = GetClientOfUserId(g_uidCarrier);
+	int other = GetClientOfUserId(g_uidOther);
+	int extra = GetClientOfUserId(g_uidExtra);
+
+	switch (c)
+	{
+		case C_HUMAN_DROP:
+		{
+			if (carrier == 0) { EndCase(false, "real client left"); return; }
+			if (HasC4(carrier)) { EndCase(false, "idle real client kept the bomb (was the client being played?)"); return; }
+			if (g_sayCount != 1) { EndCase(false, "bomb dropped but no say_team from the real client"); return; }
+			EndCase(true, "idle real client dropped the bomb and said so");
+		}
+
+		case C_HUMAN_GIVE_MSG:
+		{
+			if (carrier == 0 || other == 0) { EndCase(false, "a client is missing"); return; }
+			if (HasC4(carrier)) { EndCase(false, "idle real client kept the bomb (was the client being played?)"); return; }
+			if (!HasC4(other)) { EndCase(false, "bomb not given to the other T"); return; }
+			if (g_chatSeen == 0) { EndCase(false, "no chat message was sent to the real client"); return; }
+			EndCase(true, "bomb given and the chat message was sent");
+		}
+
+		case C_EYE_MOVED, C_MONEY_CHANGED, C_DISABLE_MID:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+			if (step == 1)
+			{
+				if (c == C_EYE_MOVED)
+				{
+					float ang[3];
+					GetClientEyeAngles(carrier, ang);
+					ang[1] += 45.0;
+					TeleportEntity(carrier, NULL_VECTOR, ang, NULL_VECTOR);
+				}
+				else if (c == C_MONEY_CHANGED)
+					SetEntProp(carrier, Prop_Send, "m_iAccount", GetEntProp(carrier, Prop_Send, "m_iAccount") + 100);
+				else
+					SetCvarInt("afkbomb", 0);
+				return;
+			}
+			if (!HasC4(carrier)) { EndCase(false, "bomb was dropped anyway"); return; }
+			EndCase(true, "bomb kept");
+		}
+
+		case C_SELF_DROP:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+			if (step == 1)
+			{
+				int c4 = GetPlayerWeaponSlot(carrier, CS_SLOT_C4);
+				if (c4 == -1) { EndCase(false, "carrier had no bomb to drop"); return; }
+				CS_DropWeapon(carrier, c4, true, true);
+				return;
+			}
+			if (GetPluginStatus(FindPluginByFile("afkbomb.smx")) != Plugin_Running)
+				{ EndCase(false, "afkbomb stopped running"); return; }
+			EndCase(true, "plugin kept running with no carrier");
+		}
+
+		case C_GIVE_NO_BOUNCE:
+		{
+			if (carrier == 0 || other == 0) { EndCase(false, "a fake client is missing"); return; }
+			if (HasC4(carrier)) { EndCase(false, "bomb bounced back to the original AFK carrier"); return; }
+			if (step == 2) EndCase(true, "bomb stayed away from the AFK carrier");
+		}
+
+		case C_GIVE_PREFERS_MOVING:
+		{
+			if (carrier == 0 || other == 0 || extra == 0) { EndCase(false, "a fake client is missing"); return; }
+			if (step == 1)
+			{
+				float vel[3] = { 200.0, 0.0, 0.0 };
+				TeleportEntity(other, NULL_VECTOR, NULL_VECTOR, vel);
+				return;
+			}
+			if (HasC4(carrier)) { EndCase(false, "carrier kept bomb"); return; }
+			if (!HasC4(other)) { EndCase(false, "bomb went to a stationary T, not the moving one"); return; }
+			EndCase(true, "bomb given to the moving T");
+		}
+
+		case C_STRIP_ACTIVE:
+		{
+			if (carrier == 0 || other == 0) { EndCase(false, "a fake client is missing"); return; }
+			if (!HasC4(other)) { EndCase(false, "bomb not given to the other T"); return; }
+			if (GetEntPropEnt(carrier, Prop_Send, "m_hActiveWeapon") == -1)
+				{ EndCase(false, "old carrier left with no active weapon (empty hands)"); return; }
+			EndCase(true, "old carrier still holds a weapon");
+		}
+
+		case C_ACTION_CT_ONLY:
+		{
+			if (carrier == 0 || extra == 0) { EndCase(false, "a fake client is missing"); return; }
+			if (HasC4(extra)) { EndCase(false, "bomb given to a CT"); return; }
+			if (!HasC4(carrier)) { EndCase(false, "bomb taken with no other T present"); return; }
+			EndCase(true, "bomb kept by the T");
+		}
+
+		case C_MSG_ON, C_MSG_OFF:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+			if (HasC4(carrier)) { EndCase(false, "bomb still held after afkbomb delay"); return; }
+			char why[128];
+			if (c == C_MSG_OFF)
+			{
+				Format(why, sizeof(why), "%d say_team message(s), expected 0", g_sayCount);
+				EndCase(g_sayCount == 0, why);
+				return;
+			}
+			if (g_sayCount != 1)
+			{
+				Format(why, sizeof(why), "%d say_team message(s), expected exactly 1", g_sayCount);
+				EndCase(false, why);
+				return;
+			}
+			bool ok = StrContains(g_lastSay, "[Afk Bomb] ") != -1 && StrContains(g_lastSay, "Drop Bomb") == -1;
+			EndCase(ok, ok ? "one translated say_team message" : "message text is not the translated phrase");
+		}
+
+		case C_ROUND_RESTART:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+			if (step == 1) { FireRoundStart(); return; }
+			if (step == 2)
+			{
+				if (!HasC4(carrier)) EndCase(false, "previous round's timer dropped the bomb");
+				return;
+			}
+			if (HasC4(carrier)) { EndCase(false, "new round's check never dropped the bomb"); return; }
+			EndCase(true, "only the new round's check acted");
+		}
+
+		case C_LATE_COUNT, C_LATE_GIVE:
+		{
+			if (step == 1)
+			{
+				int late = SpawnFake("AFKTest Late", CS_TEAM_T, true);
+				if (late == 0) { EndCase(false, "could not create late carrier"); return; }
+				g_uidCarrier = GetClientUserId(late);
+				return;
+			}
+			if (carrier == 0) { EndCase(false, "late carrier gone"); return; }
+			if (c == C_LATE_GIVE)
+			{
+				if (other == 0) { EndCase(false, "other T gone"); return; }
+				if (HasC4(carrier)) { EndCase(false, "late carrier kept bomb"); return; }
+				if (!HasC4(other)) { EndCase(false, "bomb not given to the other T"); return; }
+				EndCase(true, "late bomb moved to other T");
+				return;
+			}
+			if (step == 2)
+			{
+				if (!HasC4(carrier)) EndCase(false, "dropped before 3 latechecks");
+				return;
+			}
+			if (HasC4(carrier)) { EndCase(false, "not dropped after 3 latechecks"); return; }
+			EndCase(true, "dropped on the 3rd latecheck");
+		}
+
+		case C_DROP_STILL, C_FREEZETIME_DELAY:
+		{
+			if (c == C_FREEZETIME_DELAY && step == 1)
+			{
+				if (carrier == 0) { EndCase(false, "carrier gone before check"); return; }
+				if (!HasC4(carrier)) { EndCase(false, "bomb dropped before freezetime delay elapsed"); return; }
+				return;
+			}
+			if (carrier == 0) { EndCase(false, "carrier gone before check"); return; }
+			if (HasC4(carrier)) { EndCase(false, "bomb still held after afkbomb delay"); return; }
+			EndCase(true, "bomb dropped");
+		}
+
+		case C_DROP_MOVING:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+			if (step == 1)
+			{
+				float pos[3];
+				GetClientAbsOrigin(carrier, pos);
+				pos[0] += 200.0;
+				TeleportEntity(carrier, pos, NULL_VECTOR, NULL_VECTOR);
+				return;
+			}
+			if (!HasC4(carrier)) { EndCase(false, "moved carrier lost bomb"); return; }
+			EndCase(true, "bomb kept after movement");
+		}
+
+		case C_ACTION_GIVE:
+		{
+			if (carrier == 0 || other == 0) { EndCase(false, "a fake client is missing"); return; }
+			if (HasC4(carrier)) { EndCase(false, "carrier kept bomb"); return; }
+			if (!HasC4(other)) { EndCase(false, "bomb not given to the other T"); return; }
+			EndCase(true, "bomb moved to other T");
+		}
+
+		case C_ACTION_LONE:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+			if (!HasC4(carrier)) { EndCase(false, "bomb taken with no other T present"); return; }
+			EndCase(true, "bomb kept, no crash");
+		}
+
+		case C_DISABLED:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+			if (!HasC4(carrier)) { EndCase(false, "bomb dropped while afkbomb=0"); return; }
+			EndCase(true, "bomb kept while disabled");
+		}
+
+		case C_LATE_DROP:
+		{
+			if (step == 1)
+			{
+				int late = SpawnFake("AFKTest Late", CS_TEAM_T, true);
+				if (late == 0) { EndCase(false, "could not create late carrier"); return; }
+				g_uidCarrier = GetClientUserId(late);
+				return;
+			}
+			carrier = GetClientOfUserId(g_uidCarrier);
+			if (carrier == 0) { EndCase(false, "late carrier gone"); return; }
+			if (HasC4(carrier)) { EndCase(false, "late carrier not dropped after latechecks"); return; }
+			EndCase(true, "late carrier dropped");
+		}
+
+		case C_LATE_NONE:
+		{
+			if (step == 1)
+			{
+				int late = SpawnFake("AFKTest Late", CS_TEAM_T, true);
+				if (late == 0) { EndCase(false, "could not create late carrier"); return; }
+				g_uidCarrier = GetClientUserId(late);
+				return;
+			}
+			carrier = GetClientOfUserId(g_uidCarrier);
+			if (carrier == 0) { EndCase(false, "late carrier gone"); return; }
+			if (!HasC4(carrier)) { EndCase(false, "latecheck=0 still dropped a late carrier"); return; }
+			EndCase(true, "late carrier ignored");
+		}
+
+		case C_DEAD_CARRIER:
+		{
+			if (step == 1)
+			{
+				if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+				ForcePlayerSuicide(carrier);
+				return;
+			}
+			if (other == 0) { EndCase(false, "other T gone"); return; }
+			if (HasC4(other)) { EndCase(false, "dead carrier's bomb given to other T"); return; }
+			EndCase(true, "bomb not given to other T");
+		}
+
+		case C_DISCONNECT:
+		{
+			if (step == 1)
+			{
+				if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+				KickClient(carrier, "afkbomb test: disconnect");
+				return;
+			}
+			if (GetPluginStatus(FindPluginByFile("afkbomb.smx")) != Plugin_Running)
+				{ EndCase(false, "afkbomb stopped running after disconnect"); return; }
+			EndCase(true, "plugin survived disconnect");
+		}
+	}
+}
+
+void SkipCase(const char[] why)
+{
+	LogToFileEx(g_logPath, "[SKIP] %s - %s", g_caseNames[g_curCase], why);
+	PrintToServer("[SKIP] %s - %s", g_caseNames[g_curCase], why);
+	g_skip++;
+	g_attempt = 1;
+	g_caseActive = false;
+	CleanupFakes();
+	CreateTimer(0.5, Timer_NextCase, g_curCase + 1, TIMER_FLAG_NO_MAPCHANGE);
+}
+
+void EndCase(bool ok, const char[] msg)
+{
+	if (!g_caseActive)
+		return; // already ended (setup failure)
+
+	char line[256];
+	if (g_interfered && g_attempt < MAX_ATTEMPTS)
+	{
+		// The game restarted the round mid-case (respawns, bomb re-dealt): the result means nothing. Run it again.
+		PrintToServer("[afkbomb_test] real round_start during \"%s\" (attempt %d); retrying", g_caseNames[g_curCase], g_attempt);
+		g_attempt++;
+		g_caseActive = false;
+		CleanupFakes();
+		CreateTimer(1.5, Timer_NextCase, g_curCase, TIMER_FLAG_NO_MAPCHANGE);
+		return;
+	}
+	if (g_interfered)
+		LogToFileEx(g_logPath, "[WARN] game fired its own round_start during every attempt of \"%s\"; result may be unreliable", g_caseNames[g_curCase]);
+	g_attempt = 1;
+
+	if (ok && ErrorLogSize() > g_errSizeAtStart)
+	{
+		ok = false;
+		Format(line, sizeof(line), "[FAIL] %s - SourceMod logged errors during this case (see logs/errors_*.log)", g_caseNames[g_curCase]);
+	}
+	else
+		Format(line, sizeof(line), "[%s] %s - %s", ok ? "PASS" : "FAIL", g_caseNames[g_curCase], msg);
+	LogToFileEx(g_logPath, "%s", line);
+	PrintToServer("%s", line);
+
+	if (ok) g_pass++; else { g_fail++; LogFakes("at failure"); }
+
+	g_caseActive = false;
+	CleanupFakes();
+	CreateTimer(0.5, Timer_NextCase, g_curCase + 1, TIMER_FLAG_NO_MAPCHANGE);
+}
+
+public Action Timer_NextCase(Handle timer, any next)
+{
+	int n = view_as<int>(next);
+	if (n >= NUM_CASES)
+	{
+		g_running = false;
+		ResetCvars();
+		if (GetPluginStatus(FindPluginByFile("afkbomb.smx")) != Plugin_Running)
+		{
+			g_fail++;
+			LogToFileEx(g_logPath, "[FAIL] afkbomb.smx is no longer running at the end of the suite");
+		}
+		char summary[128];
+		Format(summary, sizeof(summary), "tests finished: %d passed, %d failed, %d skipped", g_pass, g_fail, g_skip);
+		LogToFileEx(g_logPath, "%s", summary);
+		PrintToServer("[afkbomb_test] %s", summary);
+		g_running = false;
+		if (g_cvAutorun.BoolValue)
+		{
+			// leave the plugin/extension state in console.log for test.ps1, then quit
+			ServerCommand("sm plugins list");
+			ServerCommand("sm exts list");
+			CreateTimer(1.0, Timer_Quit);
+		}
+		return Plugin_Stop;
+	}
+	StartCase(n);
+	return Plugin_Stop;
+}
+
+public Action Timer_Quit(Handle timer)
+{
+	ServerCommand("quit");
+	return Plugin_Stop;
+}
+
+//===== Helpers =====
+
+// Size of today's SourceMod error log; it grows whenever any plugin throws.
+int ErrorLogSize()
+{
+	char date[16], path[PLATFORM_MAX_PATH];
+	FormatTime(date, sizeof(date), "%Y%m%d");
+	BuildPath(Path_SM, path, sizeof(path), "logs/errors_%s.log", date);
+	return FileExists(path) ? FileSize(path) : 0;
+}
+
+int SpawnFake(const char[] name, int team, bool withBomb)
+{
+	if (g_fakeCount >= MAX_FAKE)
+		return 0;
+
+	int c = CreateFakeClient(name);
+	if (c <= 0)
+		return 0;
+
+	g_fakeUids[g_fakeCount++] = GetClientUserId(c);
+	ChangeClientTeam(c, team);
+	CS_RespawnPlayer(c);
+	PlaceApart(c, team);
+	if (withBomb)
+		GivePlayerItem(c, "weapon_c4");
+	return c;
+}
+
+// Moves a fake client to the spawn point farthest from every other living player, so fakes never
+// nudge each other and a dropped bomb never lands on a bystander (both made results random).
+void PlaceApart(int client, int team)
+{
+	float best[3], pos[3], other[3];
+	float bestDist = -1.0;
+	int ent = -1;
+	while ((ent = FindEntityByClassname(ent, (team == CS_TEAM_CT) ? "info_player_counterterrorist" : "info_player_terrorist")) != -1)
+	{
+		GetEntPropVector(ent, Prop_Data, "m_vecOrigin", pos);
+		float nearest = 99999.0;
+		for (int i = 1; i <= MaxClients; i++)
+		{
+			if (i == client || !IsClientInGame(i) || !IsPlayerAlive(i))
+				continue;
+			GetClientAbsOrigin(i, other);
+			float d = GetVectorDistance(pos, other);
+			if (d < nearest)
+				nearest = d;
+		}
+		if (nearest > bestDist)
+		{
+			bestDist = nearest;
+			best = pos;
+		}
+	}
+	if (bestDist >= 0.0)
+		TeleportEntity(client, best, NULL_VECTOR, NULL_VECTOR);
+}
+
+// One line per fake client: where it is and whether it holds the bomb (context for a failed case).
+void LogFakes(const char[] when)
+{
+	float pos[3];
+	for (int i = 0; i < g_fakeCount; i++)
+	{
+		int c = GetClientOfUserId(g_fakeUids[i]);
+		if (c <= 0 || !IsClientInGame(c))
+			continue;
+		GetClientAbsOrigin(c, pos);
+		LogToFileEx(g_logPath, "[INFO]   %s: %N alive=%d c4=%d pos=(%.0f %.0f %.0f)", when, c, IsPlayerAlive(c), HasC4(c), pos[0], pos[1], pos[2]);
+	}
+}
+
+void CleanupFakes()
+{
+	for (int i = 0; i < g_fakeCount; i++)
+	{
+		int c = GetClientOfUserId(g_fakeUids[i]);
+		if (c > 0 && IsClientConnected(c) && IsFakeClient(c))
+			KickClient(c, "afkbomb test cleanup");
+	}
+	g_fakeCount = 0;
+	ParkHuman();
+
+	// Bombs dropped by a finished case must not be picked up in the next one.
+	int ent = -1;
+	while ((ent = FindEntityByClassname(ent, "weapon_c4")) != -1)
+		AcceptEntityInput(ent, "Kill");
+}
+
+// The real client sits in spectator except during its own cases, so it is never "another T".
+void ParkHuman()
+{
+	int h = FindHuman();
+	if (h != 0 && GetClientTeam(h) != CS_TEAM_SPECTATOR)
+		ChangeClientTeam(h, CS_TEAM_SPECTATOR);
+}
+
+bool HasC4(int client)
+{
+	return GetPlayerWeaponSlot(client, CS_SLOT_C4) != -1;
+}
+
+void FireRoundStart()
+{
+	Event ev = CreateEvent("round_start");
+	if (ev != null)
+	{
+		g_selfFire = true;
+		ev.Fire(false);
+		g_selfFire = false;
+	}
+}
+
+void ResetCvars()
+{
+	SetCvarInt("afkbomb", 2);
+	SetCvarInt("afkbomb_freezetime", 0);
+	SetCvarInt("afkbomb_action", 0);
+	SetCvarInt("afkbomb_msg", 1);
+	SetCvarInt("afkbomb_latecheck", 2);
+	SetCvarFloat("afkbomb_latecheckdelay", 5.0);
+	SetCvarInt("afkbomb_latecheckaction", 1);
+	SetCvarFloat("mp_freezetime", g_origFreezetime);
+	if (!g_running && g_origIgnoreWin != -1)
+	{
+		SetCvarInt("mp_ignore_round_win_conditions", g_origIgnoreWin);
+		g_origIgnoreWin = -1;
+	}
+}
+
+void SetCvarInt(const char[] name, int value)
+{
+	ConVar cv = FindConVar(name);
+	if (cv != null)
+		cv.IntValue = value;
+}
+
+void SetCvarFloat(const char[] name, float value)
+{
+	ConVar cv = FindConVar(name);
+	if (cv != null)
+		cv.FloatValue = value;
+}
+
+int GetCvarInt(const char[] name)
+{
+	ConVar cv = FindConVar(name);
+	return (cv != null) ? cv.IntValue : -999;
+}
+
+float GetCvarFloat(const char[] name)
+{
+	ConVar cv = FindConVar(name);
+	return (cv != null) ? cv.FloatValue : -999.0;
+}

@@ -8,6 +8,11 @@ for Counter-Strike: Source. Goal: verify it still works on the current game buil
 - `scripting/*.sp` — plugin source; `scripting/include/` — project-local includes
 - `plugins/*.smx` — build output (git-ignored)
 - `build.ps1` — compile; `build.ps1 -Deploy` also copies the `.smx` to the test server
+- `tests/afkbomb_tests.sp` — regression suite plugin (`afkbomb_test` on the server console)
+- `test.ps1` — build, deploy, run the suite on a fresh srcds, then scan `afkbomb_tests.log`, SourceMod
+  `L*.log`/`errors_*.log` and `console.log` for errors; exit code 0 = clean. `-WithClient` also launches the
+  CS:S client so the two real-client cases run; `-InjectError` proves the error detection (must fail);
+  `-ScanOnly` scans the current logs without running anything.
 
 ## Test server
 
@@ -25,6 +30,15 @@ for Counter-Strike: Source. Goal: verify it still works on the current game buil
 - `PrintToChat*` skips fake clients, so chat output can only be seen with a real client connected.
 - Console output of a command run over RCON goes to the RCON reply, not to `console.log`.
 - `translations/*.txt` deploy to `addons\sourcemod\translations`
+- CS:S client on this PC: `C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Source`
+  (`cstrike_win64.exe`, launch with `steam.exe -applaunch 240 -condebug +connect <LAN IP>:27015`); chat it
+  receives lands in its `cstrike\console.log`. A plugin can put it on a team with `ChangeClientTeam` +
+  `CS_RespawnPlayer`, so no input is needed in the game window; left alone it is a genuine AFK player.
+- Fake clients joining/leaving end the round ("Game will not start until both teams have players") and the
+  game restarts it a few seconds later under whatever is running; set `mp_ignore_round_win_conditions 1`.
+- Fake clients spawned on neighbouring spawn points nudge each other and pick up each other's dropped bombs;
+  place them on far-apart spawn points for repeatable results.
+- `LogToFileEx` paths are relative to the game dir; use `BuildPath(Path_SM, ...)` for `logs/`.
 
 ## SourcePawn notes
 

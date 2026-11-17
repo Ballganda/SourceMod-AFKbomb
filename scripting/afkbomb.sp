@@ -314,6 +314,8 @@ public Action:SecondScan( Handle:timer, Handle:bombUserIdAndRoundNumberData ) //
 				return;
 			}
 			//If we're latechecking, we must relaunch timer if the bomber is in the same state
+			//Every interval is judged on its own : a new snapshot of every living terrorist starts it
+			SnapshotAll();
 			//Reusing the datapack
 			CreateDataTimer( lateCheckDelay, SecondScan, Handle:bombUserIdAndRoundNumberData, TIMER_FLAG_NO_MAPCHANGE );
 			WritePackCell( bombUserIdAndRoundNumberData, GetClientUserId( iBomber ) );

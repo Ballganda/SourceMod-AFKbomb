@@ -61,6 +61,7 @@ enum
 	C_ACTIVE_WEAPON,
 	C_MSG_ON,
 	C_MSG_OFF,
+	C_MSG_SERVER_LANG,
 	C_ROUND_RESTART,
 	C_LATE_DROP,
 	C_LATE_COUNT,
@@ -89,7 +90,8 @@ bool g_running;
 int g_pass;
 int g_fail;
 int g_skip;
-int g_chatSeen;      // chat usermessages carrying the "given to a random terrorist" text
+int g_chatSeen;      // chat usermessages carrying the give message in the server language (English)
+int g_chatOther;     // chat usermessages carrying the give message in another language (German)
 int g_waited;        // seconds spent waiting for a real client
 
 int g_fakeUids[MAX_FAKE];
@@ -149,11 +151,12 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_REENABLE], NAME_LEN, "afkbomb back to 1 takes effect from the next round");
 	strcopy(g_caseNames[C_MSG_ON], NAME_LEN, "afkbomb_msg=1 says once on drop");
 	strcopy(g_caseNames[C_MSG_OFF], NAME_LEN, "afkbomb_msg=0 stays silent");
+	strcopy(g_caseNames[C_MSG_SERVER_LANG], NAME_LEN, "drop message is server language, not the speaker's");
 	strcopy(g_caseNames[C_ROUND_RESTART], NAME_LEN, "new round cancels old round's check");
 	strcopy(g_caseNames[C_LATE_COUNT], NAME_LEN, "latecheck=3 waits for 3 checks");
 	strcopy(g_caseNames[C_LATE_GIVE], NAME_LEN, "latecheckaction=0 gives late bomb away");
 	strcopy(g_caseNames[C_HUMAN_DROP], NAME_LEN, "real client: AFK human loses bomb");
-	strcopy(g_caseNames[C_HUMAN_GIVE_MSG], NAME_LEN, "real client: give message reaches chat");
+	strcopy(g_caseNames[C_HUMAN_GIVE_MSG], NAME_LEN, "real client: give message once, in server language");
 	strcopy(g_caseNames[C_PICKUP_BLOCKED], NAME_LEN, "bomb put under the AFK player is not picked up");
 	strcopy(g_caseNames[C_PICKUP_AFTER_ACTIVITY], NAME_LEN, "AFK-flagged player who acted picks the bomb up on touch");
 	strcopy(g_caseNames[C_PICKUP_NEVER_FLAGGED], NAME_LEN, "never-flagged player picks the bomb up normally");
@@ -228,8 +231,17 @@ public Action OnChatMsg(UserMsg id, BfRead bf, const int[] players, int playersN
 		raw[n++] = view_as<char>((b == 0) ? 32 : b);
 	}
 	raw[n] = '\0';
+	// PrintToChatAll sends one usermessage per recipient; count only what a real client is sent.
+	bool toHuman = false;
+	for (int i = 0; i < playersNum; i++)
+		if (!IsFakeClient(players[i]))
+			toHuman = true;
+	if (!toHuman)
+		return Plugin_Continue;
 	if (StrContains(raw, "seems to be afk with the bomb") != -1)
 		g_chatSeen++;
+	else if (StrContains(raw, "scheint abwesend zu sein") != -1)
+		g_chatOther++;
 	return Plugin_Continue;
 }
 
@@ -251,6 +263,7 @@ bool SetupHumanCarrier()
 	CS_RespawnPlayer(h);
 	PlaceApart(h, CS_TEAM_T);
 	GivePlayerItem(h, "weapon_c4");
+	SetClientLanguage(h, GetLanguageByCode("de")); // server language stays English
 	g_uidCarrier = GetClientUserId(h);
 	return true;
 }
@@ -349,6 +362,7 @@ void StartCase(int c)
 	g_uidExtra = 0;
 	g_sayCount = 0;
 	g_chatSeen = 0;
+	g_chatOther = 0;
 	g_forceButton = false;
 	g_interfered = false;
 	g_lastSay[0] = '\0';
@@ -618,6 +632,15 @@ void StartCase(int c)
 			Schedule(4.5, c, 1); // drop at 2.0s, re-scan at 3.5s must not repeat the message
 		}
 
+		case C_MSG_SERVER_LANG:
+		{
+			SetupCarrierRound(true, false, 1, 0, 1);
+			int who = GetClientOfUserId(g_uidCarrier);
+			if (who == 0) { EndCase(false, "carrier gone"); return; }
+			SetClientLanguage(who, GetLanguageByCode("de")); // server language is English
+			Schedule(4.5, c, 1);
+		}
+
 		case C_ROUND_RESTART:
 		{
 			SetupCarrierRound(true, false, 3, 0, 1); // scans at 1.0s and 4.0s
@@ -876,7 +899,8 @@ void RunStep(int c, int step)
 			if (carrier == 0) { EndCase(false, "real client left"); return; }
 			if (HasC4(carrier)) { EndCase(false, "idle real client kept the bomb (was the client being played?)"); return; }
 			if (g_sayCount != 1) { EndCase(false, "bomb dropped but no say_team from the real client"); return; }
-			EndCase(true, "idle real client dropped the bomb and said so");
+			bool okLang = StrContains(g_lastSay, "I appear to be afk") != -1;
+			EndCase(okLang, okLang ? "idle real client dropped the bomb and said so in server language" : "drop message not in server language");
 		}
 
 		case C_HUMAN_GIVE_MSG:
@@ -884,8 +908,15 @@ void RunStep(int c, int step)
 			if (carrier == 0 || other == 0) { EndCase(false, "a client is missing"); return; }
 			if (HasC4(carrier)) { EndCase(false, "idle real client kept the bomb (was the client being played?)"); return; }
 			if (!HasC4(other)) { EndCase(false, "bomb not given to the other T"); return; }
-			if (g_chatSeen == 0) { EndCase(false, "no chat message was sent to the real client"); return; }
-			EndCase(true, "bomb given and the chat message was sent");
+			if (g_chatOther != 0) { EndCase(false, "give message reached the client in the client's own language"); return; }
+			if (g_chatSeen != 1)
+			{
+				char why[96];
+				Format(why, sizeof(why), "%d server-language give message(s) sent to chat, expected exactly 1", g_chatSeen);
+				EndCase(false, why);
+				return;
+			}
+			EndCase(true, "bomb given and exactly one server-language chat message sent");
 		}
 
 		case C_EYE_MOVED, C_MONEY_CHANGED, C_DISABLE_MID:
@@ -1086,6 +1117,21 @@ void RunStep(int c, int step)
 			}
 			bool ok = StrContains(g_lastSay, "[Afk Bomb] ") != -1 && StrContains(g_lastSay, "Drop Bomb") == -1;
 			EndCase(ok, ok ? "one translated say_team message" : "message text is not the translated phrase");
+		}
+
+		case C_MSG_SERVER_LANG:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+			if (HasC4(carrier)) { EndCase(false, "bomb still held after afkbomb delay"); return; }
+			if (g_sayCount != 1)
+			{
+				char why[96];
+				Format(why, sizeof(why), "%d say_team message(s), expected exactly 1", g_sayCount);
+				EndCase(false, why);
+				return;
+			}
+			bool ok = StrContains(g_lastSay, "I appear to be afk and I'm dropping the bomb.") != -1;
+			EndCase(ok, ok ? "drop message in server language" : "drop message not in server language");
 		}
 
 		case C_ROUND_RESTART:
@@ -1609,6 +1655,9 @@ void ResetCvars()
 	SetCvarFloat("afkbomb_latecheckdelay", 5.0);
 	SetCvarInt("afkbomb_latecheckaction", 1);
 	SetCvarFloat("mp_freezetime", g_origFreezetime);
+	int human = FindHuman();
+	if (human != 0)
+		SetClientLanguage(human, GetServerLanguage());
 	if (!g_running && g_origIgnoreWin != -1)
 	{
 		SetCvarInt("mp_ignore_round_win_conditions", g_origIgnoreWin);

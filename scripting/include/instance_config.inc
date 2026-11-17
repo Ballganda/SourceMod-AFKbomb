@@ -29,6 +29,7 @@
  * `name "default"`). Entries missing from an existing file are appended at the end; existing lines are never
  * rewritten. Only cvars added with InstCfg_Add are applied; any other name is skipped and logged once.
  * Lines are `name value`; `//` and `;` start a comment line, blank lines are ignored, values may be quoted.
+ * A `;` after a value ends it (`afkbomb 2;` sets 2); inside quotes it is part of the value.
  */
 #if defined _instance_config_included
  #endinput
@@ -339,6 +340,7 @@ static int InstCfg_SkipSpace(const char[] line, int i, int len)
 }
 
 // Reads a quoted ("..." may hold spaces) or bare token starting at i; returns the index after it.
+// A bare token ends at whitespace or ';' ; a ';' inside quotes is part of the token.
 static int InstCfg_Token(const char[] line, int i, int len, char[] out, int outLen)
 {
 	int n = 0;
@@ -356,7 +358,7 @@ static int InstCfg_Token(const char[] line, int i, int len, char[] out, int outL
 	}
 	else
 	{
-		while (i < len && line[i] != ' ' && line[i] != '\t' && line[i] != '\r' && line[i] != '\n')
+		while (i < len && line[i] != ' ' && line[i] != '\t' && line[i] != '\r' && line[i] != '\n' && line[i] != ';')
 		{
 			if (n < outLen - 1)
 				out[n++] = line[i];

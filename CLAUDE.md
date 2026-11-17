@@ -65,3 +65,17 @@ syntax https://wiki.alliedmods.net/SourcePawn_Transitional_Syntax · stock plugi
 - CS:S specifics: `#include <cstrike>` and `<sdktools>`; teams are `CS_TEAM_T` (2) / `CS_TEAM_CT` (3);
   bomb is `weapon_c4`, `CS_SLOT_C4`; `CS_DropWeapon`, events `bomb_pickup`, `bomb_dropped`, `bomb_planted`, `round_start`.
 - Plugins that rely on signatures/offsets (gamedata) are what game updates break; pure-API plugins rarely break.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as GitHub issues in `Ballganda/SourceMod-AFKbomb`, via `gh`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.

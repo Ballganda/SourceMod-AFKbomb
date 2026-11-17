@@ -25,7 +25,8 @@
 #define MAX_FAKE 4
 #define NAME_LEN 64
 #define MAX_ATTEMPTS 3 // a case is rerun if the game restarted the round under it
-#define MAX_STEP 99 // timer data = case * 100 + step
+#define STEP_SLOTS 100 // steps per case in a timer value, see PackStep/UnpackStep
+#define MONEY_CHANGE 100 // added to a client's money to show activity
 
 // Chat colour codes as a client receives them (control characters, written as escapes)
 #define CHAT_DEFAULT "\x01"
@@ -99,12 +100,22 @@ enum
 	C_CFG_SEMICOLON,
 	C_CFG_DEPRECATED_REWORDED, // issue #29: deprecation is declared at registration, not read from the description
 	C_CFG_DEPRECATED_WORD,
-	C_HUMAN_DROP,     // the last two need a real client connected; skipped otherwise
+	C_HUMAN_DROP,     // these three need a real client connected; skipped otherwise
 	C_HUMAN_GIVE_MSG,
 	C_HUMAN_FIRST,
 	C_CFG_MAP_CHANGE, // changes the map, so it runs last
 	NUM_CASES
 };
+
+// Steps of a case. A case numbers its own steps from 1; the generic steps below mean the same in every case.
+enum
+{
+	STEP_CHANGE_MONEY_OTHER = 96, // the second client's money changes: activity that leaves nothing moving afterwards
+	STEP_NUDGE_EXTRA,             // the third client shows activity without changing where it stands
+	STEP_NUDGE_OTHER,             // the second client shows activity without changing where it stands
+	HIGHEST_STEP = STEP_NUDGE_OTHER
+};
+static_assert(HIGHEST_STEP < STEP_SLOTS, "HIGHEST_STEP must be below STEP_SLOTS, or a step would unpack as another case");
 
 char g_caseNames[NUM_CASES][NAME_LEN];
 
@@ -854,7 +865,7 @@ void StartCase(int c)
 			if (ct == 0) { EndCase(false, "could not create CT fake client"); return; }
 			g_uidExtra = GetClientUserId(ct);
 			SetupCarrierRound(true, false, 1, 0, 0);
-			Schedule(1.5, c, 97); // the CT is active, still not a receiver
+			Schedule(1.5, c, STEP_NUDGE_EXTRA); // the CT is active, still not a receiver
 			Schedule(3.5, c, 1);
 		}
 
@@ -894,8 +905,8 @@ void StartCase(int c)
 		case C_LATE_GIVE:
 		{
 			SetupCarrierRound(false, true, 1, 2, 1, 1.0, -1.0); // "other" is active in both late intervals (2.0-3.0s, 3.0-4.0s)
-			Schedule(2.5, c, 96);
-			Schedule(3.5, c, 96);
+			Schedule(2.5, c, STEP_CHANGE_MONEY_OTHER);
+			Schedule(3.5, c, STEP_CHANGE_MONEY_OTHER);
 			SetCvarFloat("afkbomb_latecheckdelay", 1.0);
 			SetCvarInt("afkbomb_latecheckaction", 0);
 			Schedule(1.2, c, 1); // found at 2.0s; checks at 3.0, 4.0s
@@ -905,7 +916,7 @@ void StartCase(int c)
 		case C_LATE_FRESH_IDLE:
 		{
 			SetupCarrierRound(false, true, 1, 2, 1, 1.0, -1.0); // "other" acts once, between the late snapshot (2.0s) and check 1 (3.0s)
-			Schedule(2.5, c, 96);
+			Schedule(2.5, c, STEP_CHANGE_MONEY_OTHER);
 			SetCvarFloat("afkbomb_latecheckdelay", 1.0);
 			SetCvarInt("afkbomb_latecheckaction", 0);
 			Schedule(1.2, c, 1); // found at 2.0s; check 1 at 3.0s, check 2 at 4.0s against a snapshot of 3.0s
@@ -925,8 +936,8 @@ void StartCase(int c)
 		case C_LATE_GIVE_RULES:
 		{
 			SetupCarrierRound(false, true, 1, 2, 1, 1.0, -1.0); // "other" active in both intervals: gets the bomb at 4.0s
-			Schedule(2.5, c, 96);
-			Schedule(3.5, c, 96);
+			Schedule(2.5, c, STEP_CHANGE_MONEY_OTHER);
+			Schedule(3.5, c, STEP_CHANGE_MONEY_OTHER);
 			SetCvarFloat("afkbomb_latecheckdelay", 1.0);
 			SetCvarInt("afkbomb_latecheckaction", 0);
 			Schedule(1.2, c, 1);
@@ -1063,7 +1074,7 @@ void SetupCarrierRound(bool withCarrier, bool withOther, int afkbomb, int latech
 		}
 		g_uidOther = GetClientUserId(other);
 		if (nudge >= 0.0)
-			Schedule(nudge, g_curCase, 98); // "other" shows activity between snapshot and check
+			Schedule(nudge, g_curCase, STEP_NUDGE_OTHER); // "other" shows activity between snapshot and check
 	}
 	FireRoundStart(freeze);
 }
@@ -1136,15 +1147,26 @@ bool CheckGiveColours(int carrier)
 
 void Schedule(float delay, int c, int step)
 {
-	CreateTimer(delay, Timer_Step, c * 100 + step, TIMER_FLAG_NO_MAPCHANGE);
+	CreateTimer(delay, Timer_Step, PackStep(c, step), TIMER_FLAG_NO_MAPCHANGE);
+}
+
+// A case and one of its steps as a single timer value.
+int PackStep(int c, int step)
+{
+	return c * STEP_SLOTS + step;
+}
+
+void UnpackStep(int packed, int &c, int &step)
+{
+	c = packed / STEP_SLOTS;
+	step = packed % STEP_SLOTS;
 }
 
 public Action Timer_Step(Handle timer, any data)
 {
-	int code = view_as<int>(data);
-	int c = code / 100;
-	int step = code % 100;
-	if (step > MAX_STEP || !g_caseActive || c != g_curCase)
+	int c, step;
+	UnpackStep(view_as<int>(data), c, step);
+	if (!g_caseActive || c != g_curCase)
 		return Plugin_Stop; // stale timer from a finished case
 	RunStep(c, step);
 	return Plugin_Stop;
@@ -1157,10 +1179,10 @@ void RunStep(int c, int step)
 	int extra = GetClientOfUserId(g_uidExtra);
 
 	// generic steps: a client shows activity without changing where it stands
-	if (step == 98) { if (other > 0) NudgeClient(other); return; }
-	if (step == 97) { if (extra > 0) NudgeClient(extra); return; }
+	if (step == STEP_NUDGE_OTHER) { if (other > 0) NudgeClient(other); return; }
+	if (step == STEP_NUDGE_EXTRA) { if (extra > 0) NudgeClient(extra); return; }
 	// activity that leaves nothing moving afterwards (a nudged fake's body keeps turning for a second or so)
-	if (step == 96) { if (other > 0) SetEntProp(other, Prop_Send, "m_iAccount", GetEntProp(other, Prop_Send, "m_iAccount") + 100); return; }
+	if (step == STEP_CHANGE_MONEY_OTHER) { if (other > 0) SetEntProp(other, Prop_Send, "m_iAccount", GetEntProp(other, Prop_Send, "m_iAccount") + MONEY_CHANGE); return; }
 
 	switch (c)
 	{
@@ -1407,7 +1429,7 @@ void RunStep(int c, int step)
 					TeleportEntity(carrier, NULL_VECTOR, ang, NULL_VECTOR);
 				}
 				else if (c == C_MONEY_CHANGED)
-					SetEntProp(carrier, Prop_Send, "m_iAccount", GetEntProp(carrier, Prop_Send, "m_iAccount") + 100);
+					SetEntProp(carrier, Prop_Send, "m_iAccount", GetEntProp(carrier, Prop_Send, "m_iAccount") + MONEY_CHANGE);
 				else
 					SetCvarInt("afkbomb", 0);
 				return;

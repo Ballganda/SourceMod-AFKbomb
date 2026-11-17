@@ -97,6 +97,8 @@ enum
 	C_CFG_FOREIGN,
 	C_CFG_LONG_VALUE,
 	C_CFG_SEMICOLON,
+	C_CFG_DEPRECATED_REWORDED, // issue #29: deprecation is declared at registration, not read from the description
+	C_CFG_DEPRECATED_WORD,
 	C_HUMAN_DROP,     // the last two need a real client connected; skipped otherwise
 	C_HUMAN_GIVE_MSG,
 	C_HUMAN_FIRST,
@@ -147,6 +149,8 @@ char g_cfgTypo[64];    // a cvar name that exists nowhere
 ConVar g_cvTestLong;   // this plugin's own cvars for the include
 ConVar g_cvTestSpaced;
 ConVar g_cvTestBare;
+ConVar g_cvTestRetired; // registered as deprecated; its description does not say so
+ConVar g_cvTestWord;    // in use; its description merely contains the word
 
 public Plugin myinfo =
 {
@@ -213,6 +217,8 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_CFG_FOREIGN], NAME_LEN, "cvar the plugin does not own is not applied, reported once");
 	strcopy(g_caseNames[C_CFG_LONG_VALUE], NAME_LEN, "long quoted value and quoted spaces are not truncated");
 	strcopy(g_caseNames[C_CFG_SEMICOLON], NAME_LEN, "value ends at a trailing semicolon, quoted semicolon kept");
+	strcopy(g_caseNames[C_CFG_DEPRECATED_REWORDED], NAME_LEN, "deprecated cvar keeps its comment whatever its description says");
+	strcopy(g_caseNames[C_CFG_DEPRECATED_WORD], NAME_LEN, "description that merely says deprecated adds no comment");
 	strcopy(g_caseNames[C_CFG_MAP_CHANGE], NAME_LEN, "edited value applied after map change, unknown reported once");
 	strcopy(g_caseNames[C_CLAMP], NAME_LEN, "cvar bounds clamped");
 	strcopy(g_caseNames[C_DROP_STILL], NAME_LEN, "stationary carrier loses bomb");
@@ -261,6 +267,10 @@ public void OnPluginStart()
 	InstCfg_Add(g_cvTestLong);
 	InstCfg_Add(g_cvTestSpaced);
 	InstCfg_Add(g_cvTestBare);
+	g_cvTestRetired = CreateConVar("afkbomb_test_retired", "0", "No longer used by the suite.");
+	g_cvTestWord = CreateConVar("afkbomb_test_word", "1", "Whether deprecated settings are listed.");
+	InstCfg_Add(g_cvTestRetired, true);
+	InstCfg_Add(g_cvTestWord);
 	InstCfg_Ensure(); // configs/afkbomb_tests.cfg; applied only by the case that tests it
 
 	AddCommandListener(OnSayTeam, "say_team");
@@ -593,6 +603,27 @@ void StartCase(int c)
 			if (!StrEqual(got, "a;b")) { EndCase(false, "a semicolon inside quotes was cut"); return; }
 			g_cvTestSpaced.GetString(got, sizeof(got));
 			EndCase(StrEqual(got, "x y"), "semicolon ends a bare value, quoted semicolon kept");
+		}
+
+		case C_CFG_DEPRECATED_REWORDED, C_CFG_DEPRECATED_WORD:
+		{
+			// a freshly generated file for this plugin's own cvars
+			bool retired = (c == C_CFG_DEPRECATED_REWORDED);
+			char path[PLATFORM_MAX_PATH], block[512];
+			CfgPath("afkbomb_tests", path, sizeof(path));
+			DeleteFile(path);
+			InstCfg_Ensure();
+			if (!CfgRead(path, g_cfgA, sizeof(g_cfgA))) { EndCase(false, "the test plugin's config was not generated"); return; }
+			int at = StrContains(g_cfgA, retired ? "\nafkbomb_test_retired \"0\"" : "\nafkbomb_test_word \"1\"");
+			if (at == -1) { EndCase(false, "the cvar has no entry in the generated file"); return; }
+			CfgBlockBefore(at, block, sizeof(block));
+			if (StrContains(block, retired ? "// No longer used by the suite.\n" : "// Whether deprecated settings are listed.\n") == -1)
+				{ EndCase(false, "description not in the entry's comments"); return; }
+			bool marked = StrContains(block, "// DEPRECATED: kept so old configs still load; it has no effect.\n") != -1;
+			if (retired)
+				EndCase(marked, marked ? "comment present though the description does not say deprecated" : "no deprecation comment on a cvar registered as deprecated");
+			else
+				EndCase(!marked, !marked ? "no comment on a cvar that is not registered as deprecated" : "deprecation comment on a cvar that is not registered as deprecated");
 		}
 
 		case C_CFG_MAP_CHANGE:

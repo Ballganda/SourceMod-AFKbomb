@@ -92,6 +92,7 @@ enum
 	C_CFG_APPEND,
 	C_CFG_FOREIGN,
 	C_CFG_LONG_VALUE,
+	C_CFG_SEMICOLON,
 	C_HUMAN_DROP,     // the last two need a real client connected; skipped otherwise
 	C_HUMAN_GIVE_MSG,
 	C_HUMAN_FIRST,
@@ -207,6 +208,7 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_CFG_APPEND], NAME_LEN, "missing entries appended, existing lines unchanged");
 	strcopy(g_caseNames[C_CFG_FOREIGN], NAME_LEN, "cvar the plugin does not own is not applied, reported once");
 	strcopy(g_caseNames[C_CFG_LONG_VALUE], NAME_LEN, "long quoted value and quoted spaces are not truncated");
+	strcopy(g_caseNames[C_CFG_SEMICOLON], NAME_LEN, "value ends at a trailing semicolon, quoted semicolon kept");
 	strcopy(g_caseNames[C_CFG_MAP_CHANGE], NAME_LEN, "edited value applied after map change, unknown reported once");
 	strcopy(g_caseNames[C_CLAMP], NAME_LEN, "cvar bounds clamped");
 	strcopy(g_caseNames[C_DROP_STILL], NAME_LEN, "stationary carrier loses bomb");
@@ -568,6 +570,25 @@ void StartCase(int c)
 			if (!StrEqual(got, "hello  big world")) { EndCase(false, "quoted value with spaces was altered"); return; }
 			g_cvTestBare.GetString(got, sizeof(got));
 			EndCase(StrEqual(got, "unquoted"), StrEqual(got, "unquoted") ? "2000-character and spaced quoted values intact" : "bare value wrong");
+		}
+
+		case C_CFG_SEMICOLON:
+		{
+			// issue #26: `name 2;` sets 2, a ';' inside quotes stays, a quoted value may be followed by ';'
+			char path[PLATFORM_MAX_PATH], got[64];
+			CfgPath("afkbomb_tests", path, sizeof(path));
+			File f = OpenFile(path, "wb");
+			if (f == null) { EndCase(false, "cannot write the test plugin's config"); return; }
+			f.WriteString("; full-line comment\nafkbomb_test_bare 2;\nafkbomb_test_long \"a;b\"\nafkbomb_test_spaced \"x y\"; note\n", false);
+			delete f;
+			g_cvTestBare.SetString("x");
+			InstCfg_Apply();
+			g_cvTestBare.GetString(got, sizeof(got));
+			if (!StrEqual(got, "2")) { Format(got, sizeof(got), "bare value read as \"%s\", wanted 2", got); EndCase(false, got); return; }
+			g_cvTestLong.GetString(got, sizeof(got));
+			if (!StrEqual(got, "a;b")) { EndCase(false, "a semicolon inside quotes was cut"); return; }
+			g_cvTestSpaced.GetString(got, sizeof(got));
+			EndCase(StrEqual(got, "x y"), "semicolon ends a bare value, quoted semicolon kept");
 		}
 
 		case C_CFG_MAP_CHANGE:

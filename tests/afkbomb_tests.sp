@@ -45,6 +45,9 @@ enum
 	C_NO_CANDIDATE,
 	C_LATE_NO_CANDIDATE,
 	C_STRIP_ACTIVE,
+	C_STRIP_SECONDARY,
+	C_STRIP_KNIFE,
+	C_STRIP_KEEPS,
 	C_ACTION_LONE,
 	C_ACTION_CT_ONLY,
 	C_DISABLED,
@@ -127,7 +130,10 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_NO_CANDIDATE], NAME_LEN, "action=0 with only an AFK teammate drops once");
 	strcopy(g_caseNames[C_LATE_NO_CANDIDATE], NAME_LEN, "latecheckaction=0 with only an AFK teammate drops once");
 	strcopy(g_caseNames[C_HUMAN_FIRST], NAME_LEN, "real client: active human preferred over a closer bot");
-	strcopy(g_caseNames[C_STRIP_ACTIVE], NAME_LEN, "action=0 strip while holding C4");
+	strcopy(g_caseNames[C_STRIP_ACTIVE], NAME_LEN, "action=0 strip while holding C4: primary in hand");
+	strcopy(g_caseNames[C_STRIP_SECONDARY], NAME_LEN, "strip while holding C4, no primary: secondary in hand");
+	strcopy(g_caseNames[C_STRIP_KNIFE], NAME_LEN, "strip while holding C4, no primary/secondary: knife in hand");
+	strcopy(g_caseNames[C_STRIP_KEEPS], NAME_LEN, "strip while holding another weapon: it stays in hand");
 	strcopy(g_caseNames[C_ACTION_CT_ONLY], NAME_LEN, "action=0 never gives bomb to an active CT, drops it");
 	strcopy(g_caseNames[C_DISABLE_MID], NAME_LEN, "afkbomb=0 set mid-check cancels drop");
 	strcopy(g_caseNames[C_MSG_ON], NAME_LEN, "afkbomb_msg=1 says once on drop");
@@ -518,15 +524,22 @@ void StartCase(int c)
 			Schedule(4.5, c, 2);
 		}
 
-		case C_STRIP_ACTIVE:
+		case C_STRIP_ACTIVE, C_STRIP_SECONDARY, C_STRIP_KNIFE, C_STRIP_KEEPS:
 		{
+			KillLooseGuns(); // an earlier case's dropped guns must not be picked up by this carrier
 			SetupCarrierRound(true, true, 1, 0, 0);
 			int carrier = GetClientOfUserId(g_uidCarrier);
 			if (carrier > 0)
 			{
-				int c4 = GetPlayerWeaponSlot(carrier, CS_SLOT_C4);
-				if (c4 != -1)
-					SetEntPropEnt(carrier, Prop_Send, "m_hActiveWeapon", c4);
+				if (c == C_STRIP_ACTIVE || c == C_STRIP_KEEPS)
+					GivePlayerItem(carrier, "weapon_ak47");
+				if (c == C_STRIP_SECONDARY || c == C_STRIP_KNIFE)
+					RemoveSlot(carrier, CS_SLOT_PRIMARY); // a primary dropped by an earlier case may have been picked up
+				if (c == C_STRIP_KNIFE)
+					RemoveSlot(carrier, CS_SLOT_SECONDARY);
+				int hold = GetPlayerWeaponSlot(carrier, c == C_STRIP_KEEPS ? CS_SLOT_SECONDARY : CS_SLOT_C4);
+				if (hold != -1)
+					SetEntPropEnt(carrier, Prop_Send, "m_hActiveWeapon", hold);
 			}
 			Schedule(2.5, c, 1);
 		}
@@ -680,6 +693,28 @@ void SetupCarrierRound(bool withCarrier, bool withOther, int afkbomb, int latech
 			Schedule(nudge, g_curCase, 98); // "other" shows activity between snapshot and check
 	}
 	FireRoundStart(freeze);
+}
+
+void KillLooseGuns()
+{
+	char names[3][] = {"weapon_ak47", "weapon_glock", "weapon_usp"};
+	for (int i = 0; i < 3; i++)
+	{
+		int ent = -1;
+		while ((ent = FindEntityByClassname(ent, names[i])) != -1)
+			if (GetEntPropEnt(ent, Prop_Send, "m_hOwnerEntity") == -1)
+				AcceptEntityInput(ent, "Kill");
+	}
+}
+
+void RemoveSlot(int client, int slot)
+{
+	int w = GetPlayerWeaponSlot(client, slot);
+	if (w != -1)
+	{
+		RemovePlayerItem(client, w);
+		AcceptEntityInput(w, "Kill");
+	}
 }
 
 void Schedule(float delay, int c, int step)
@@ -862,13 +897,24 @@ void RunStep(int c, int step)
 			EndCase(g_sayCount == 1, g_sayCount == 1 ? "late bomb dropped with one drop message" : why);
 		}
 
-		case C_STRIP_ACTIVE:
+		case C_STRIP_ACTIVE, C_STRIP_SECONDARY, C_STRIP_KNIFE, C_STRIP_KEEPS:
 		{
 			if (carrier == 0 || other == 0) { EndCase(false, "a fake client is missing"); return; }
 			if (!HasC4(other)) { EndCase(false, "bomb not given to the other T"); return; }
-			if (GetEntPropEnt(carrier, Prop_Send, "m_hActiveWeapon") == -1)
-				{ EndCase(false, "old carrier left with no active weapon (empty hands)"); return; }
-			EndCase(true, "old carrier still holds a weapon");
+			int slot = (c == C_STRIP_ACTIVE) ? CS_SLOT_PRIMARY : (c == C_STRIP_SECONDARY || c == C_STRIP_KEEPS) ? CS_SLOT_SECONDARY : CS_SLOT_KNIFE;
+			int want = GetPlayerWeaponSlot(carrier, slot);
+			int have = GetEntPropEnt(carrier, Prop_Send, "m_hActiveWeapon");
+			if (have == -1) { EndCase(false, "old carrier left with no active weapon (empty hands)"); return; }
+			if (want == -1 || have != want)
+			{
+				char hn[32], wn[32], why[96];
+				GetEdictClassname(have, hn, sizeof(hn));
+				if (want != -1) GetEdictClassname(want, wn, sizeof(wn)); else strcopy(wn, sizeof(wn), "(none in slot)");
+				Format(why, sizeof(why), "old carrier holds %s, expected %s", hn, wn);
+				EndCase(false, why);
+				return;
+			}
+			EndCase(true, "old carrier holds the expected weapon");
 		}
 
 		case C_ACTION_CT_ONLY:

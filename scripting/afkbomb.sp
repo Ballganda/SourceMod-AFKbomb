@@ -306,8 +306,15 @@ bool:stripAndGive2ActiveTBomb( any:iOldBomber )
 	GetEdictClassname( iEntIndex, sClassName, sizeof(sClassName) );
 	if ( StrEqual( sClassName, "weapon_c4", false ) )
 	{
+		new bool:bInHand = ( GetEntPropEnt( iOldBomber, Prop_Send, "m_hActiveWeapon" ) == iEntIndex );
+
 		RemovePlayerItem( iOldBomber, iEntIndex );
 		AcceptEntityInput( iEntIndex, "kill" );
+
+		if ( bInHand ) //Do not leave empty hands : primary, else secondary, else knife
+		{
+			SwitchToBestWeapon( iOldBomber );
+		}
 	}
 
 	//3- Give
@@ -320,6 +327,20 @@ bool:stripAndGive2ActiveTBomb( any:iOldBomber )
 	}
 
 	return true;
+}
+
+//Put the first owned weapon of slot 0 (primary), 1 (secondary), 2 (knife) in hand
+SwitchToBestWeapon( any:iClient )
+{
+	for ( new iSlot = 0; iSlot <= 2; ++iSlot )
+	{
+		new iWeapon = GetPlayerWeaponSlot( iClient, iSlot );
+		if ( iWeapon != -1 )
+		{
+			SetEntPropEnt( iClient, Prop_Send, "m_hActiveWeapon", iWeapon );
+			return;
+		}
+	}
 }
 
 //=====State-related

@@ -132,6 +132,8 @@ ConVar g_cvAutorun;
 char g_logPath[PLATFORM_MAX_PATH];
 ConVar g_cvInjectError;
 ConVar g_cvWaitClient;
+ConVar g_cvClientLog; // path of the real client's console.log (set by test.ps1 -WithClient)
+int g_clientLogPos;   // size of that log when the case started
 
 char g_cfgA[16384];    // config file contents under inspection
 char g_cfgB[16384];
@@ -235,6 +237,8 @@ public void OnPluginStart()
 
 	// With +afkbomb_test_wait_client 1 the autorun waits (up to 3 minutes) for a real client to be in game.
 	g_cvWaitClient = CreateConVar("afkbomb_test_wait_client", "0", "Autorun waits for a real client before starting.", FCVAR_NONE, true, 0.0, true, 1.0);
+
+	g_cvClientLog = CreateConVar("afkbomb_test_client_log", "", "Path of the real client's console.log; lets a case check the chat colour codes it received.");
 
 	// PrintToChat* only reaches real clients; watch the chat usermessages to see what they are sent.
 	static const char chatMsgs[][] = { "SayText", "SayText2", "TextMsg" };
@@ -587,6 +591,16 @@ void StartCase(int c)
 		case C_HUMAN_GIVE_MSG:
 		{
 			if (!SetupHumanCarrier()) { SkipCase("no real client connected"); return; }
+			char clog[PLATFORM_MAX_PATH];
+			g_cvClientLog.GetString(clog, sizeof(clog));
+			g_clientLogPos = -1;
+			File lf = (clog[0] != ' ') ? OpenFile(clog, "rb") : null;
+			if (lf != null)
+			{
+				lf.Seek(0, SEEK_END);
+				g_clientLogPos = lf.Position;
+				delete lf;
+			}
 			SetupCarrierRound(false, true, 1, 0, 0);
 			Schedule(2.5, c, 1);
 		}
@@ -1020,6 +1034,50 @@ void RemoveSlot(int client, int slot)
 	}
 }
 
+char g_colourWhy[160];
+
+// The client's console.log keeps the colour control bytes of the chat it received.
+// 1.5.0 sent "[SM] " + "<name> seems to be afk with the bomb ..."
+bool CheckGiveColours(int carrier)
+{
+	char clog[PLATFORM_MAX_PATH];
+	g_cvClientLog.GetString(clog, sizeof(clog));
+	if (g_clientLogPos < 0)
+	{
+		Format(g_colourWhy, sizeof(g_colourWhy), "client console.log not available (afkbomb_test_client_log = '%s')", clog);
+		return false;
+	}
+	File f = OpenFile(clog, "rb");
+	if (f == null)
+	{
+		strcopy(g_colourWhy, sizeof(g_colourWhy), "could not open the client console.log");
+		return false;
+	}
+	f.Seek(g_clientLogPos, SEEK_SET);
+	char name[MAX_NAME_LENGTH];
+	GetClientName(carrier, name, sizeof(name));
+	char want[192];
+	Format(want, sizeof(want), "[SM] %s seems to be afk with the bomb", name);
+	char line[512];
+	int seen = 0, good = 0;
+	while (!f.EndOfFile() && f.ReadLine(line, sizeof(line)))
+	{
+		if (StrContains(line, "seems to be afk with the bomb") == -1)
+			continue;
+		seen++;
+		if (StrContains(line, want) != -1)
+			good++;
+	}
+	delete f;
+	if (seen != 1 || good != 1)
+	{
+		Format(g_colourWhy, sizeof(g_colourWhy), "client chat log: %d give line(s), %d with the 1.5.0 colour codes, expected 1 and 1", seen, good);
+		return false;
+	}
+	strcopy(g_colourWhy, sizeof(g_colourWhy), "bomb given, one server-language message with the 1.5.0 colour codes in the client chat log");
+	return true;
+}
+
 void Schedule(float delay, int c, int step)
 {
 	CreateTimer(delay, Timer_Step, c * 100 + step, TIMER_FLAG_NO_MAPCHANGE);
@@ -1265,6 +1323,7 @@ void RunStep(int c, int step)
 
 		case C_HUMAN_GIVE_MSG:
 		{
+			if (step == 2) { EndCase(CheckGiveColours(carrier), g_colourWhy); return; } // the receiver is idle too and may drop it again by now
 			if (carrier == 0 || other == 0) { EndCase(false, "a client is missing"); return; }
 			if (HasC4(carrier)) { EndCase(false, "idle real client kept the bomb (was the client being played?)"); return; }
 			if (!HasC4(other)) { EndCase(false, "bomb not given to the other T"); return; }
@@ -1276,7 +1335,7 @@ void RunStep(int c, int step)
 				EndCase(false, why);
 				return;
 			}
-			EndCase(true, "bomb given and exactly one server-language chat message sent");
+			Schedule(2.0, c, 2); // let the client write the line to its console.log
 		}
 
 		case C_EYE_MOVED, C_MONEY_CHANGED, C_DISABLE_MID:

@@ -277,7 +277,10 @@ public Action:SecondScan( Handle:timer, Handle:bombUserIdAndRoundNumberData ) //
 				{
 					if ( GetConVarInt( g_afkBomb_displayMsg ) == 1 )
 					{
-						FakeClientCommand( iBomber, "say_team [Afk Bomb] %t", "Drop Bomb" );
+						//Server language, not the speaker's
+						decl String:sDropMsg[ 192 ];
+						Format( sDropMsg, sizeof(sDropMsg), "%T", "Drop Bomb", LANG_SERVER );
+						FakeClientCommand( iBomber, "say_team [Afk Bomb] %s", sDropMsg );
 					}
 					g_shouldMsgBombDrop = false;
 				}
@@ -382,7 +385,10 @@ bool:stripAndGive2ActiveTBomb( any:iOldBomber )
 	//4- Verbose
 	if ( GetConVarInt( g_afkBomb_displayMsg ) == 1 )
 	{
-		PrintToChatAll( "[SM] %t", "StripNGive Bomb", "", iOldBomber, "" );
+		//Server language for everyone, one message
+		decl String:sGiveMsg[ 256 ];
+		Format( sGiveMsg, sizeof(sGiveMsg), "%T", "StripNGive Bomb", LANG_SERVER, "", iOldBomber, "" );
+		PrintToChatAll( "[SM] %s", sGiveMsg );
 	}
 
 	return true;

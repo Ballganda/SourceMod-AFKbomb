@@ -52,6 +52,8 @@ enum
 	C_ACTION_CT_ONLY,
 	C_DISABLED,
 	C_DISABLE_MID,
+	C_DISABLE_LATE,
+	C_REENABLE,
 	C_FREEZETIME_DELAY,
 	C_FREEZE_PRE_ACTIVITY,
 	C_FREEZE_CVAR_IGNORED,
@@ -136,6 +138,8 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_STRIP_KEEPS], NAME_LEN, "strip while holding another weapon: it stays in hand");
 	strcopy(g_caseNames[C_ACTION_CT_ONLY], NAME_LEN, "action=0 never gives bomb to an active CT, drops it");
 	strcopy(g_caseNames[C_DISABLE_MID], NAME_LEN, "afkbomb=0 set mid-check cancels drop");
+	strcopy(g_caseNames[C_DISABLE_LATE], NAME_LEN, "afkbomb=0 set during late checks stops them");
+	strcopy(g_caseNames[C_REENABLE], NAME_LEN, "afkbomb back to 1 takes effect from the next round");
 	strcopy(g_caseNames[C_MSG_ON], NAME_LEN, "afkbomb_msg=1 says once on drop");
 	strcopy(g_caseNames[C_MSG_OFF], NAME_LEN, "afkbomb_msg=0 stays silent");
 	strcopy(g_caseNames[C_ROUND_RESTART], NAME_LEN, "new round cancels old round's check");
@@ -451,6 +455,23 @@ void StartCase(int c)
 			SetupCarrierRound(true, false, 1, 0, 1);
 			Schedule(1.5, c, 1); // between first (1.0s) and second (2.0s) scan
 			Schedule(2.5, c, 2);
+		}
+
+		case C_DISABLE_LATE:
+		{
+			SetupCarrierRound(false, false, 1, 3, 1);
+			SetCvarFloat("afkbomb_latecheckdelay", 1.0);
+			Schedule(1.2, c, 1); // carrier found at 2.0s; checks at 3.0, 4.0, 5.0s
+			Schedule(3.5, c, 2); // after the first late check: disable
+			Schedule(5.7, c, 3); // after the check that would have dropped
+		}
+
+		case C_REENABLE:
+		{
+			SetupCarrierRound(true, false, 0, 0, 1); // disabled: freeze end at 1.0s does nothing
+			Schedule(1.5, c, 1); // enable mid-round
+			Schedule(3.0, c, 2); // this round stays unchecked; start the next round
+			Schedule(7.5, c, 3); // new round: freeze end 4.1s, snapshot, drop at 6.1s
 		}
 
 		case C_SELF_DROP:
@@ -796,6 +817,35 @@ void RunStep(int c, int step)
 			}
 			if (!HasC4(carrier)) { EndCase(false, "bomb was dropped anyway"); return; }
 			EndCase(true, "bomb kept");
+		}
+
+		case C_DISABLE_LATE:
+		{
+			if (step == 1)
+			{
+				int late = SpawnFake("AFKTest Late", CS_TEAM_T, true);
+				if (late == 0) { EndCase(false, "could not create late carrier"); return; }
+				g_uidCarrier = GetClientUserId(late);
+				return;
+			}
+			if (carrier == 0) { EndCase(false, "late carrier gone"); return; }
+			if (step == 2) { SetCvarInt("afkbomb", 0); return; }
+			if (!HasC4(carrier)) { EndCase(false, "late check dropped the bomb after afkbomb=0"); return; }
+			EndCase(true, "late checks stopped");
+		}
+
+		case C_REENABLE:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+			if (step == 1) { SetCvarInt("afkbomb", 1); return; }
+			if (step == 2)
+			{
+				if (!HasC4(carrier)) { EndCase(false, "bomb dropped in the round that started disabled"); return; }
+				FireRoundStart();
+				return;
+			}
+			if (HasC4(carrier)) { EndCase(false, "next round did not check the carrier"); return; }
+			EndCase(true, "disabled round untouched, next round checked");
 		}
 
 		case C_SELF_DROP:

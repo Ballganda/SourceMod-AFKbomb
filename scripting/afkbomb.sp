@@ -144,6 +144,10 @@ public Action:CheckForBomber( Handle:timer, any:roundNumber )
 	if ( roundNumber != g_roundNumber )
 		return;
 
+	//afkbomb 0 cancels every scheduled check
+	if ( GetConVarInt( g_afkBomb ) < 1 )
+		return;
+
 	//If we're to look for the bomber, that means he's not found yet and that he won't repeat his speech
 	g_shouldMsgBombDrop = true;
 	g_lateCheckCount = 0;
@@ -199,7 +203,9 @@ public Action:SecondScan( Handle:timer, Handle:bombUserIdAndRoundNumberData ) //
 
 	new iBomber = GetClientOfUserId( bomberUserId );
 
-	if ( g_roundNumber == roundNumber ) //If we're in the same round
+	//afkbomb 0 cancels the check in progress : nothing is judged, dropped or rescheduled
+	if ( g_roundNumber == roundNumber && //If we're in the same round
+			GetConVarInt( g_afkBomb ) >= 1 )
 	{
 		CompareAll(); //Judge every snapshotted terrorist in one go
 

@@ -66,9 +66,11 @@ new Float:g_snapVelocity[ MAXPLAYERS + 1 ][ 3 ]; // GetEntPropVector()
 //Result of the latest comparison : true = unchanged since the snapshot (afk)
 new bool:g_afkJudged[ MAXPLAYERS + 1 ];
 
+//Judged afk at any comparison this round : never a receiver again for the rest of the round
+new bool:g_afkFlag[ MAXPLAYERS + 1 ];
+
 //Prevent re-running a function
 new g_iAccount;
-new g_iVelocityOffset;
 
 //Only msg once for dropping bomb
 new bool:g_shouldMsgBombDrop;
@@ -113,7 +115,7 @@ public OnPluginStart()
 
 	//Prevent re-running a function
 	g_iAccount = FindSendPropOffs( "CCSPlayer", "m_iAccount" );
-	g_iVelocityOffset = FindSendPropInfo("CBasePlayer", "m_vecVelocity[0]");
+	
 }
 
 public Event_RoundStart( Handle:event, const String:name[], bool:dontBroadcast )
@@ -208,20 +210,16 @@ public Action:SecondScan( Handle:timer, Handle:bombUserIdAndRoundNumberData ) //
 		{
 			if ( g_firstBombDrop || ++g_lateCheckCount >= GetConVarInt( g_afkBomb_lateCheckNumber ) )
 			{
-				//Starts 1.5 changes
-				if ( ( g_firstBombDrop && GetConVarInt( g_afkBomb_action ) == 1 ) ||
-						( !g_firstBombDrop && GetConVarInt( g_afkBomb_lateCheckAction ) == 1 ) )
+				//Give to the best active teammate if the action says so; otherwise (or if nobody qualifies) drop
+				if ( ( ( g_firstBombDrop && GetConVarInt( g_afkBomb_action ) == 0 ) ||
+						( !g_firstBombDrop && GetConVarInt( g_afkBomb_lateCheckAction ) == 0 ) ) &&
+						stripAndGive2ActiveTBomb( iBomber ) ) //The function takes care of its own verbose
 				{
-					CS_DropWeapon( iBomber, GetPlayerWeaponSlot( iBomber, 4 ), true, true );
-				}
-				else
-				{
-					stripAndGive2RandomTBomb( iBomber ); //The function takes care of its own verbose
 					CheckForBomber( INVALID_HANDLE, roundNumber ); //lets start next check right now
 					return; //no latecheck problem are possible so
-
 				}
-				//End 1.5 changes
+
+				CS_DropWeapon( iBomber, GetPlayerWeaponSlot( iBomber, 4 ), true, true );
 				lateCheckDelay = 1.5;
 
 				if ( g_shouldMsgBombDrop ) //Do not repeat !
@@ -250,40 +248,60 @@ public Action:SecondScan( Handle:timer, Handle:bombUserIdAndRoundNumberData ) //
 //========== Privates ===========
 
 //===== 1fct
-//return true if bomb was given to someone else (useless :$)
-bool:stripAndGive2RandomTBomb( any:iOldBomber ) //Since 1.4.0 (Change 2/2) ; changed in 1.5 (priorize moving players)
+//Give the bomb to the best receiver : active (judged in the latest comparison), alive T other than the old bomber, never flagged afk
+//Order : humans before bots, then moving before stationary, then smallest distance to the old bomber
+//return false (and leave the bomb alone) if nobody qualifies
+bool:stripAndGive2ActiveTBomb( any:iOldBomber )
 {
-	//1- Count Ts (exit if needed)
-	decl terrorists[ MaxClients ];
-	decl movTerrorists[ MaxClients ];
-	new sizeT;
-	new sizeMovT;
+	new iEntIndex = GetPlayerWeaponSlot( iOldBomber, 4 );
+	if ( iEntIndex == -1 )
+		return false;
 
-	decl Float:velocX; //no real need for Y & Z
+	//1- Find the best receiver
+	decl Float:oldPos[ 3 ];
+	GetClientAbsOrigin( iOldBomber, oldPos );
+
+	new best = 0;
+	new bool:bestHuman;
+	new bool:bestMoving;
+	new Float:bestDist;
 
 	for ( new i = 1; i <= MaxClients; ++i )
 	{
-		if ( IsClientInGame( i ) &&
-				GetClientTeam( i ) == 2 &&
-				IsPlayerAlive( i ) &&
-				i != iOldBomber )
+		if ( i == iOldBomber ||
+				!IsClientInGame( i ) ||
+				GetClientTeam( i ) != 2 ||
+				!IsPlayerAlive( i ) ||
+				g_snapUserId[ i ] != GetClientUserId( i ) || //has to have been compared
+				g_afkJudged[ i ] ||
+				g_afkFlag[ i ] )
+			continue;
+
+		decl Float:pos[ 3 ];
+		decl Float:velocity[ 3 ];
+		GetClientAbsOrigin( i, pos );
+		GetEntPropVector( i, Prop_Data, "m_vecVelocity", velocity );
+
+		new bool:human = !IsFakeClient( i );
+		new bool:moving = GetVectorLength( velocity ) != 0.0;
+		new Float:dist = GetVectorDistance( oldPos, pos );
+
+		if ( best == 0 ||
+				( human != bestHuman ? human :
+					( moving != bestMoving ? moving : dist < bestDist ) ) )
 		{
-			terrorists[ sizeT++ ] = i;
-			velocX = GetEntDataFloat( i, g_iVelocityOffset );
-			if ( velocX != 0.0 )
-			{
-				movTerrorists[ sizeMovT++ ] = i;
-			}
+			best = i;
+			bestHuman = human;
+			bestMoving = moving;
+			bestDist = dist;
 		}
 	}
 
-	if ( sizeT == 0 )
+	if ( best == 0 )
 		return false;
 
 	//2- Strip c4
 	decl String:sClassName[ MAX_NAME_LENGTH ];
-
-	new iEntIndex = GetPlayerWeaponSlot( iOldBomber, 4 );
 
 	GetEdictClassname( iEntIndex, sClassName, sizeof(sClassName) );
 	if ( StrEqual( sClassName, "weapon_c4", false ) )
@@ -292,20 +310,13 @@ bool:stripAndGive2RandomTBomb( any:iOldBomber ) //Since 1.4.0 (Change 2/2) ; cha
 		AcceptEntityInput( iEntIndex, "kill" );
 	}
 
-	//3- Get Random T and give
-	if ( sizeMovT > 0 ) //priorize moving players
-	{
-		GivePlayerItem( movTerrorists[ GetRandomInt( 0, sizeMovT - 1 ) ], "weapon_c4" );
-	}
-	else
-	{
-		GivePlayerItem( terrorists[ GetRandomInt( 0, sizeT - 1 ) ], "weapon_c4" );
-	}
+	//3- Give
+	GivePlayerItem( best, "weapon_c4" );
 
 	//4- Verbose
 	if ( GetConVarInt( g_afkBomb_displayMsg ) == 1 )
 	{
-		PrintToChatAll( "\x04[SM] \x01%t", "StripNGive Bomb", "\x04", iOldBomber, "\x01" );
+		PrintToChatAll( "[SM] %t", "StripNGive Bomb", "", iOldBomber, "" );
 	}
 
 	return true;
@@ -319,6 +330,7 @@ ClearSnapshots()
 	{
 		g_snapUserId[ i ] = 0;
 		g_afkJudged[ i ] = false;
+		g_afkFlag[ i ] = false;
 	}
 }
 
@@ -352,7 +364,11 @@ SnapshotAll()
 CompareAll()
 {
 	for ( new i = 1; i <= MaxClients; ++i )
+	{
 		g_afkJudged[ i ] = ( g_snapUserId[ i ] != 0 && sameState( i ) );
+		if ( g_afkJudged[ i ] )
+			g_afkFlag[ i ] = true;
+	}
 }
 
 //true if the client is exactly in the state of its snapshot (nothing done since)

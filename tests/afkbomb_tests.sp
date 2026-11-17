@@ -38,7 +38,12 @@ enum
 	C_SELF_DROP,
 	C_ACTION_GIVE,
 	C_GIVE_NO_BOUNCE,
-	C_GIVE_PREFERS_MOVING,
+	C_GIVE_PREFERS_MOVING,   // along Y only
+	C_GIVE_PREFERS_MOVING_Z, // along Z only
+	C_RECV_ACTIVE_OVER_AFK,
+	C_RECV_CLOSEST,
+	C_NO_CANDIDATE,
+	C_LATE_NO_CANDIDATE,
 	C_STRIP_ACTIVE,
 	C_ACTION_LONE,
 	C_ACTION_CT_ONLY,
@@ -60,6 +65,7 @@ enum
 	C_DISCONNECT,
 	C_HUMAN_DROP,     // the last two need a real client connected; skipped otherwise
 	C_HUMAN_GIVE_MSG,
+	C_HUMAN_FIRST,
 	NUM_CASES
 };
 
@@ -114,9 +120,15 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_MONEY_CHANGED], NAME_LEN, "carrier who spent money keeps bomb");
 	strcopy(g_caseNames[C_SELF_DROP], NAME_LEN, "carrier drops bomb himself mid-check");
 	strcopy(g_caseNames[C_GIVE_NO_BOUNCE], NAME_LEN, "action=0 never hands bomb back to the AFK");
-	strcopy(g_caseNames[C_GIVE_PREFERS_MOVING], NAME_LEN, "action=0 prefers a moving T");
+	strcopy(g_caseNames[C_GIVE_PREFERS_MOVING], NAME_LEN, "action=0 prefers a T moving along Y over a closer still one");
+	strcopy(g_caseNames[C_GIVE_PREFERS_MOVING_Z], NAME_LEN, "action=0 prefers a T moving along Z over a closer still one");
+	strcopy(g_caseNames[C_RECV_ACTIVE_OVER_AFK], NAME_LEN, "action=0 gives to the active T, not a closer AFK one");
+	strcopy(g_caseNames[C_RECV_CLOSEST], NAME_LEN, "action=0 gives to the closest of two active Ts");
+	strcopy(g_caseNames[C_NO_CANDIDATE], NAME_LEN, "action=0 with only an AFK teammate drops once");
+	strcopy(g_caseNames[C_LATE_NO_CANDIDATE], NAME_LEN, "latecheckaction=0 with only an AFK teammate drops once");
+	strcopy(g_caseNames[C_HUMAN_FIRST], NAME_LEN, "real client: active human preferred over a closer bot");
 	strcopy(g_caseNames[C_STRIP_ACTIVE], NAME_LEN, "action=0 strip while holding C4");
-	strcopy(g_caseNames[C_ACTION_CT_ONLY], NAME_LEN, "action=0 never gives bomb to a CT");
+	strcopy(g_caseNames[C_ACTION_CT_ONLY], NAME_LEN, "action=0 never gives bomb to an active CT, drops it");
 	strcopy(g_caseNames[C_DISABLE_MID], NAME_LEN, "afkbomb=0 set mid-check cancels drop");
 	strcopy(g_caseNames[C_MSG_ON], NAME_LEN, "afkbomb_msg=1 says once on drop");
 	strcopy(g_caseNames[C_MSG_OFF], NAME_LEN, "afkbomb_msg=0 stays silent");
@@ -129,7 +141,7 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_DROP_STILL], NAME_LEN, "stationary carrier loses bomb");
 	strcopy(g_caseNames[C_DROP_MOVING], NAME_LEN, "moved carrier keeps bomb");
 	strcopy(g_caseNames[C_ACTION_GIVE], NAME_LEN, "action=0 gives bomb to other T");
-	strcopy(g_caseNames[C_ACTION_LONE], NAME_LEN, "action=0 with no other T keeps bomb");
+	strcopy(g_caseNames[C_ACTION_LONE], NAME_LEN, "action=0 with no other T drops bomb once");
 	strcopy(g_caseNames[C_DISABLED], NAME_LEN, "afkbomb=0 never drops");
 	strcopy(g_caseNames[C_FREEZETIME_DELAY], NAME_LEN, "idle carrier loses bomb afkbomb s after freeze ends");
 	strcopy(g_caseNames[C_FREEZE_PRE_ACTIVITY], NAME_LEN, "activity during freezetime does not save carrier");
@@ -399,6 +411,22 @@ void StartCase(int c)
 			Schedule(2.5, c, 1);
 		}
 
+		case C_HUMAN_FIRST:
+		{
+			int h = FindHuman();
+			if (h == 0) { SkipCase("no real client connected"); return; }
+			SetupCarrierRound(true, false, 1, 0, 0);
+			ChangeClientTeam(h, CS_TEAM_T);
+			CS_RespawnPlayer(h);
+			PlaceApart(h, CS_TEAM_T);
+			g_uidOther = GetClientUserId(h);
+			int bot = SpawnFake("AFKTest Bot", CS_TEAM_T, false);
+			if (bot == 0) { EndCase(false, "could not create fake client"); return; }
+			g_uidExtra = GetClientUserId(bot);
+			Schedule(1.5, c, 1); // human and bot both become active, the bot ends up closer
+			Schedule(2.5, c, 2);
+		}
+
 		case C_DROP_STILL:
 		{
 			SetupCarrierRound(true, false, 1, 0, 1);
@@ -436,21 +464,58 @@ void StartCase(int c)
 		case C_GIVE_NO_BOUNCE:
 		{
 			SetupCarrierRound(true, true, 1, 0, 0);
+			Schedule(2.6, c, 3); // the carrier judged AFK now moves: still never a receiver
 			Schedule(3.5, c, 1); // the receiver is scanned at 2.0s and 3.0s
 			Schedule(4.5, c, 2);
 		}
 
-		case C_GIVE_PREFERS_MOVING:
+		case C_GIVE_PREFERS_MOVING, C_GIVE_PREFERS_MOVING_Z:
 		{
-			// carrier + two still Ts + one moving T; a random pick would hit the mover 1 time in 3
+			// "other" is far and will be moving at the check, "extra" is close and active but stationary
+			SetupCarrierRound(true, true, 1, 0, 0, 1.0, -1.0);
 			int still = SpawnFake("AFKTest Still", CS_TEAM_T, false);
 			if (still == 0) { EndCase(false, "could not create fake client"); return; }
 			g_uidExtra = GetClientUserId(still);
-			SetupCarrierRound(true, true, 1, 0, 0);
-			int still2 = SpawnFake("AFKTest Still2", CS_TEAM_T, false);
-			if (still2 == 0) { EndCase(false, "could not create fake client"); return; }
-			Schedule(1.95, c, 1); // push "other" just before the second scan (2.0s)
+			TeleportNear(still, GetClientOfUserId(g_uidCarrier)); // placed before the snapshot so it has settled (no fall velocity)
+			Schedule(1.5, c, 1);  // the still one looks around: active, stationary
+			Schedule(1.95, c, 2); // the far one gets velocity just before the check (2.0s)
+			Schedule(2.5, c, 3);
+		}
+
+		case C_RECV_ACTIVE_OVER_AFK:
+		{
+			SetupCarrierRound(true, true, 1, 0, 0); // "other" becomes active at 1.5s
+			int idle = SpawnFake("AFKTest Idle", CS_TEAM_T, false);
+			if (idle == 0) { EndCase(false, "could not create fake client"); return; }
+			g_uidExtra = GetClientUserId(idle);
+			TeleportNear(idle, GetClientOfUserId(g_uidCarrier)); // closer than "other", but never does anything
+			Schedule(2.5, c, 1);
+		}
+
+		case C_RECV_CLOSEST:
+		{
+			SetupCarrierRound(true, true, 1, 0, 0, 1.0, -1.0);
+			int far = SpawnFake("AFKTest Far", CS_TEAM_T, false);
+			if (far == 0) { EndCase(false, "could not create fake client"); return; }
+			g_uidExtra = GetClientUserId(far);
+			TeleportNear(GetClientOfUserId(g_uidOther), GetClientOfUserId(g_uidCarrier)); // before the snapshot, so it has settled
+			Schedule(1.5, c, 1); // both look around: active
 			Schedule(2.5, c, 2);
+		}
+
+		case C_NO_CANDIDATE:
+		{
+			SetupCarrierRound(true, true, 1, 0, 0, 1.0, -1.0); // the only other T never acts
+			Schedule(3.5, c, 1);
+		}
+
+		case C_LATE_NO_CANDIDATE:
+		{
+			SetupCarrierRound(false, true, 1, 2, 1, 1.0, -1.0);
+			SetCvarFloat("afkbomb_latecheckdelay", 1.0);
+			SetCvarInt("afkbomb_latecheckaction", 0);
+			Schedule(1.2, c, 1);
+			Schedule(4.5, c, 2);
 		}
 
 		case C_STRIP_ACTIVE:
@@ -472,6 +537,7 @@ void StartCase(int c)
 			if (ct == 0) { EndCase(false, "could not create CT fake client"); return; }
 			g_uidExtra = GetClientUserId(ct);
 			SetupCarrierRound(true, false, 1, 0, 0);
+			Schedule(1.5, c, 97); // the CT is active, still not a receiver
 			Schedule(3.5, c, 1);
 		}
 
@@ -501,7 +567,7 @@ void StartCase(int c)
 
 		case C_LATE_GIVE:
 		{
-			SetupCarrierRound(false, true, 1, 2, 1);
+			SetupCarrierRound(false, true, 1, 2, 1, 1.0, 2.5); // "other" becomes active after the late snapshot (2.0s)
 			SetCvarFloat("afkbomb_latecheckdelay", 1.0);
 			SetCvarInt("afkbomb_latecheckaction", 0);
 			Schedule(1.2, c, 1); // found at 2.0s; checks at 3.0, 4.0s
@@ -585,7 +651,7 @@ void StartCase(int c)
 
 // Creates the carrier (optionally with a second idle T), sets cvars, and fires round_start.
 // withCarrier=false: no bomb yet (late-check cases spawn the carrier later).
-void SetupCarrierRound(bool withCarrier, bool withOther, int afkbomb, int latecheck, int action, float freeze = 1.0)
+void SetupCarrierRound(bool withCarrier, bool withOther, int afkbomb, int latecheck, int action, float freeze = 1.0, float nudge = 1.5)
 {
 	SetCvarInt("afkbomb", afkbomb);
 	SetCvarInt("afkbomb_latecheck", latecheck);
@@ -610,6 +676,8 @@ void SetupCarrierRound(bool withCarrier, bool withOther, int afkbomb, int latech
 			return;
 		}
 		g_uidOther = GetClientUserId(other);
+		if (nudge >= 0.0)
+			Schedule(nudge, g_curCase, 98); // "other" shows activity between snapshot and check
 	}
 	FireRoundStart(freeze);
 }
@@ -636,8 +704,26 @@ void RunStep(int c, int step)
 	int other = GetClientOfUserId(g_uidOther);
 	int extra = GetClientOfUserId(g_uidExtra);
 
+	// generic steps: a client shows activity without changing where it stands
+	if (step == 98) { if (other > 0) NudgeClient(other); return; }
+	if (step == 97) { if (extra > 0) NudgeClient(extra); return; }
+
 	switch (c)
 	{
+		case C_HUMAN_FIRST:
+		{
+			if (carrier == 0 || other == 0 || extra == 0) { EndCase(false, "a client is missing"); return; }
+			if (step == 1)
+			{
+				NudgeClient(other);
+				TeleportNear(extra, carrier);
+				return;
+			}
+			if (HasC4(extra)) { EndCase(false, "bomb went to the bot although an active human was available"); return; }
+			if (!HasC4(other)) { EndCase(false, "bomb not given to the active human"); return; }
+			EndCase(true, "active human preferred over the closer bot");
+		}
+
 		case C_HUMAN_DROP:
 		{
 			if (carrier == 0) { EndCase(false, "real client left"); return; }
@@ -695,22 +781,85 @@ void RunStep(int c, int step)
 		case C_GIVE_NO_BOUNCE:
 		{
 			if (carrier == 0 || other == 0) { EndCase(false, "a fake client is missing"); return; }
+			if (step == 3) { NudgeClient(carrier); return; }
 			if (HasC4(carrier)) { EndCase(false, "bomb bounced back to the original AFK carrier"); return; }
 			if (step == 2) EndCase(true, "bomb stayed away from the AFK carrier");
 		}
 
-		case C_GIVE_PREFERS_MOVING:
+		case C_GIVE_PREFERS_MOVING, C_GIVE_PREFERS_MOVING_Z:
 		{
 			if (carrier == 0 || other == 0 || extra == 0) { EndCase(false, "a fake client is missing"); return; }
 			if (step == 1)
 			{
-				float vel[3] = { 200.0, 0.0, 0.0 };
+				NudgeClient(extra);
+				return;
+			}
+			if (step == 2)
+			{
+				float vel[3];
+				if (c == C_GIVE_PREFERS_MOVING) vel[1] = 200.0; else vel[2] = 300.0;
 				TeleportEntity(other, NULL_VECTOR, NULL_VECTOR, vel);
 				return;
 			}
 			if (HasC4(carrier)) { EndCase(false, "carrier kept bomb"); return; }
-			if (!HasC4(other)) { EndCase(false, "bomb went to a stationary T, not the moving one"); return; }
+			if (HasC4(extra)) { EndCase(false, "bomb went to the closer stationary T, not the moving one"); return; }
+			if (!HasC4(other)) { EndCase(false, "bomb not given to the moving T"); return; }
 			EndCase(true, "bomb given to the moving T");
+		}
+
+		case C_RECV_ACTIVE_OVER_AFK:
+		{
+			if (carrier == 0 || other == 0 || extra == 0) { EndCase(false, "a fake client is missing"); return; }
+			if (HasC4(extra)) { EndCase(false, "bomb went to the AFK T"); return; }
+			if (!HasC4(other)) { EndCase(false, "bomb not given to the active T"); return; }
+			EndCase(true, "bomb given to the active T, not the AFK one");
+		}
+
+		case C_RECV_CLOSEST:
+		{
+			if (carrier == 0 || other == 0 || extra == 0) { EndCase(false, "a fake client is missing"); return; }
+			if (step == 1)
+			{
+				NudgeClient(other);
+				NudgeClient(extra);
+				return;
+			}
+			float a[3], b[3];
+			GetClientAbsOrigin(carrier, a);
+			GetClientAbsOrigin(extra, b);
+			if (GetVectorDistance(a, b) < 200.0) { EndCase(false, "setup: far T is not far from the carrier"); return; }
+			if (HasC4(extra)) { EndCase(false, "bomb went to the farther active T"); return; }
+			if (!HasC4(other)) { EndCase(false, "bomb not given to the closest active T"); return; }
+			EndCase(true, "bomb given to the closest active T");
+		}
+
+		case C_NO_CANDIDATE:
+		{
+			if (carrier == 0 || other == 0) { EndCase(false, "a fake client is missing"); return; }
+			if (HasC4(carrier)) { EndCase(false, "carrier kept bomb"); return; }
+			if (HasC4(other)) { EndCase(false, "bomb given to an AFK T"); return; }
+			if (!BombOnGround()) { EndCase(false, "bomb is not on the ground"); return; }
+			char why[96];
+			Format(why, sizeof(why), "%d say_team message(s), expected exactly 1", g_sayCount);
+			EndCase(g_sayCount == 1, g_sayCount == 1 ? "bomb dropped with one drop message" : why);
+		}
+
+		case C_LATE_NO_CANDIDATE:
+		{
+			if (step == 1)
+			{
+				int late = SpawnFake("AFKTest Late", CS_TEAM_T, true);
+				if (late == 0) { EndCase(false, "could not create late carrier"); return; }
+				g_uidCarrier = GetClientUserId(late);
+				return;
+			}
+			if (carrier == 0 || other == 0) { EndCase(false, "a fake client is missing"); return; }
+			if (HasC4(carrier)) { EndCase(false, "late carrier kept bomb"); return; }
+			if (HasC4(other)) { EndCase(false, "late bomb given to an AFK T"); return; }
+			if (!BombOnGround()) { EndCase(false, "bomb is not on the ground"); return; }
+			char why[96];
+			Format(why, sizeof(why), "%d say_team message(s), expected exactly 1", g_sayCount);
+			EndCase(g_sayCount == 1, g_sayCount == 1 ? "late bomb dropped with one drop message" : why);
 		}
 
 		case C_STRIP_ACTIVE:
@@ -726,8 +875,9 @@ void RunStep(int c, int step)
 		{
 			if (carrier == 0 || extra == 0) { EndCase(false, "a fake client is missing"); return; }
 			if (HasC4(extra)) { EndCase(false, "bomb given to a CT"); return; }
-			if (!HasC4(carrier)) { EndCase(false, "bomb taken with no other T present"); return; }
-			EndCase(true, "bomb kept by the T");
+			if (HasC4(carrier)) { EndCase(false, "AFK carrier kept the bomb"); return; }
+			if (!BombOnGround()) { EndCase(false, "bomb is not on the ground"); return; }
+			EndCase(true, "bomb dropped, not given to the CT");
 		}
 
 		case C_MSG_ON, C_MSG_OFF:
@@ -886,8 +1036,11 @@ void RunStep(int c, int step)
 		case C_ACTION_LONE:
 		{
 			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
-			if (!HasC4(carrier)) { EndCase(false, "bomb taken with no other T present"); return; }
-			EndCase(true, "bomb kept, no crash");
+			if (HasC4(carrier)) { EndCase(false, "carrier kept the bomb"); return; }
+			if (!BombOnGround()) { EndCase(false, "bomb is not on the ground"); return; }
+			char why[96];
+			Format(why, sizeof(why), "%d say_team message(s), expected exactly 1", g_sayCount);
+			EndCase(g_sayCount == 1, g_sayCount == 1 ? "bomb dropped once with no other T" : why);
 		}
 
 		case C_DISABLED:
@@ -1135,6 +1288,42 @@ void ParkHuman()
 	int h = FindHuman();
 	if (h != 0 && GetClientTeam(h) != CS_TEAM_SPECTATOR)
 		ChangeClientTeam(h, CS_TEAM_SPECTATOR);
+}
+
+// Shows activity without changing where the client stands (fakes look around; a real client's view is its own).
+void NudgeClient(int client)
+{
+	if (IsFakeClient(client))
+	{
+		float ang[3];
+		GetClientEyeAngles(client, ang);
+		ang[1] += 30.0;
+		TeleportEntity(client, NULL_VECTOR, ang, NULL_VECTOR);
+	}
+	else
+	{
+		float pos[3];
+		GetClientAbsOrigin(client, pos);
+		pos[0] += 30.0;
+		TeleportEntity(client, pos, NULL_VECTOR, NULL_VECTOR);
+	}
+}
+
+void TeleportNear(int client, int ref)
+{
+	float pos[3];
+	GetClientAbsOrigin(ref, pos);
+	pos[0] += 120.0;
+	TeleportEntity(client, pos, NULL_VECTOR, NULL_VECTOR);
+}
+
+bool BombOnGround()
+{
+	int ent = -1;
+	while ((ent = FindEntityByClassname(ent, "weapon_c4")) != -1)
+		if (GetEntPropEnt(ent, Prop_Send, "m_hOwnerEntity") == -1)
+			return true;
+	return false;
 }
 
 bool HasC4(int client)

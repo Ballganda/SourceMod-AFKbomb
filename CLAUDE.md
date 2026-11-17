@@ -8,6 +8,11 @@ for Counter-Strike: Source. Goal: verify it still works on the current game buil
 - `scripting/*.sp` — plugin source; `scripting/include/` — project-local includes
 - `plugins/*.smx` — build output (git-ignored)
 - `build.ps1` — compile; `build.ps1 -Deploy` also copies the `.smx` to the test server
+- `tests/afkbomb_tests.sp` — regression suite plugin (`afkbomb_test` on the server console)
+- `test.ps1` — build, deploy, run the suite on a fresh srcds, then scan `afkbomb_tests.log`, SourceMod
+  `L*.log`/`errors_*.log` and `console.log` for errors; exit code 0 = clean. `-WithClient` also launches the
+  CS:S client so the five real-client cases run; `-InjectError` proves the error detection (must fail);
+  `-ScanOnly` scans the current logs without running anything.
 
 ## Test server
 
@@ -25,6 +30,19 @@ for Counter-Strike: Source. Goal: verify it still works on the current game buil
 - `PrintToChat*` skips fake clients, so chat output can only be seen with a real client connected.
 - Console output of a command run over RCON goes to the RCON reply, not to `console.log`.
 - `translations/*.txt` deploy to `addons\sourcemod\translations`
+- CS:S client on this PC: `C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Source`
+  (`cstrike_win64.exe`, launch with `steam.exe -applaunch 240 -condebug +connect <LAN IP>:27015`); chat it
+  receives lands in its `cstrike\console.log`. A plugin can put it on a team with `ChangeClientTeam` +
+  `CS_RespawnPlayer`, so no input is needed in the game window; left alone it is a genuine AFK player.
+- Fake clients joining/leaving end the round ("Game will not start until both teams have players") and the
+  game restarts it a few seconds later under whatever is running; set `mp_ignore_round_win_conditions 1`.
+- Fake clients spawned on neighbouring spawn points nudge each other and pick up each other's dropped bombs;
+  place them on far-apart spawn points for repeatable results.
+- Per-instance config: `scripting/include/instance_config.inc` writes `configs/<plugin>.cfg` under the SourceMod
+  path (never game `cfg`). A second SourceMod base path is testable: copy `addons\sourcemod` to
+  `addons\sourcemod_b` (`Copy-Item -Recurse`), start srcds with `+sm_basepath addons/sourcemod_b`; the file and
+  the `L*.log` then appear only under `sourcemod_b`. Delete the copy afterwards.
+- `LogToFileEx` paths are relative to the game dir; use `BuildPath(Path_SM, ...)` for `logs/`.
 
 ## SourcePawn notes
 
@@ -51,3 +69,11 @@ syntax https://wiki.alliedmods.net/SourcePawn_Transitional_Syntax · stock plugi
 - CS:S specifics: `#include <cstrike>` and `<sdktools>`; teams are `CS_TEAM_T` (2) / `CS_TEAM_CT` (3);
   bomb is `weapon_c4`, `CS_SLOT_C4`; `CS_DropWeapon`, events `bomb_pickup`, `bomb_dropped`, `bomb_planted`, `round_start`.
 - Plugins that rely on signatures/offsets (gamedata) are what game updates break; pure-API plugins rarely break.
+
+## Agent skills
+
+- Issue tracker: GitHub Issues on `Ballganda/SourceMod-AFKbomb` via `gh`. See `docs/agents/issue-tracker.md`.
+- Triage labels: see `docs/agents/triage-labels.md`.
+- Domain docs: see `docs/agents/domain.md`.
+- Models: see `docs/agents/models.md`.
+- Replies: to the user in chat. First line, when the message gave an instruction, decision or correction beyond a bare "yes": "Understood: <your interpretation>". Next line: the outcome, in one sentence. Then bullets, each a short clause holding exactly one fact; a reason, example or consequence gets its own bullet. Number them when the user answers per item. Each offer of further work is its own numbered item with a recommendation that "yes" accepts, as is each of two or more decisions. Use a table to compare items across attributes, a code block for code. Write prose when the user asks for an explanation. A subagent's Report follows its caller's format.

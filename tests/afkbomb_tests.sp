@@ -68,6 +68,10 @@ enum
 	C_LATE_NONE,
 	C_DEAD_CARRIER,
 	C_DISCONNECT,
+	C_PICKUP_BLOCKED,
+	C_PICKUP_AFTER_ACTIVITY,
+	C_PICKUP_NEVER_FLAGGED,
+	C_PICKUP_BLOCK_ENDS,
 	C_HUMAN_DROP,     // the last two need a real client connected; skipped otherwise
 	C_HUMAN_GIVE_MSG,
 	C_HUMAN_FIRST,
@@ -147,6 +151,10 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_LATE_GIVE], NAME_LEN, "latecheckaction=0 gives late bomb away");
 	strcopy(g_caseNames[C_HUMAN_DROP], NAME_LEN, "real client: AFK human loses bomb");
 	strcopy(g_caseNames[C_HUMAN_GIVE_MSG], NAME_LEN, "real client: give message reaches chat");
+	strcopy(g_caseNames[C_PICKUP_BLOCKED], NAME_LEN, "bomb put under the AFK player is not picked up");
+	strcopy(g_caseNames[C_PICKUP_AFTER_ACTIVITY], NAME_LEN, "AFK-flagged player who acted picks the bomb up on touch");
+	strcopy(g_caseNames[C_PICKUP_NEVER_FLAGGED], NAME_LEN, "never-flagged player picks the bomb up normally");
+	strcopy(g_caseNames[C_PICKUP_BLOCK_ENDS], NAME_LEN, "pickup block ends with the round");
 	strcopy(g_caseNames[C_CLAMP], NAME_LEN, "cvar bounds clamped");
 	strcopy(g_caseNames[C_DROP_STILL], NAME_LEN, "stationary carrier loses bomb");
 	strcopy(g_caseNames[C_DROP_MOVING], NAME_LEN, "moved carrier keeps bomb");
@@ -441,6 +449,28 @@ void StartCase(int c)
 		{
 			SetupCarrierRound(true, false, 1, 0, 1);
 			Schedule(3.5, c, 1);
+		}
+
+		case C_PICKUP_BLOCKED, C_PICKUP_AFTER_ACTIVITY:
+		{
+			SetupCarrierRound(true, false, 1, 0, 1); // dropped at 2.0s
+			Schedule(2.5, c, 1); // bomb goes under the carrier (after activity for the second case)
+			Schedule(3.3, c, 2);
+		}
+
+		case C_PICKUP_NEVER_FLAGGED:
+		{
+			SetupCarrierRound(true, true, 1, 0, 1); // "other" is active at the check, so never flagged
+			Schedule(2.5, c, 1);
+			Schedule(3.3, c, 2);
+		}
+
+		case C_PICKUP_BLOCK_ENDS:
+		{
+			SetupCarrierRound(true, false, 1, 0, 1);
+			Schedule(2.5, c, 1); // bomb under the carrier: blocked
+			Schedule(3.2, c, 2); // still blocked; new round: the bomb lying under the carrier is collected at once
+			Schedule(4.0, c, 4);
 		}
 
 		case C_DROP_MOVING:
@@ -778,6 +808,35 @@ void RunStep(int c, int step)
 			if (HasC4(extra)) { EndCase(false, "bomb went to the bot although an active human was available"); return; }
 			if (!HasC4(other)) { EndCase(false, "bomb not given to the active human"); return; }
 			EndCase(true, "active human preferred over the closer bot");
+		}
+
+		case C_PICKUP_BLOCKED, C_PICKUP_AFTER_ACTIVITY, C_PICKUP_NEVER_FLAGGED, C_PICKUP_BLOCK_ENDS:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+			int who = (c == C_PICKUP_NEVER_FLAGGED) ? other : carrier;
+			if (who == 0) { EndCase(false, "a fake client is missing"); return; }
+			if (c == C_PICKUP_BLOCK_ENDS && step == 2)
+			{
+				if (HasC4(carrier)) { EndCase(false, "setup: the AFK player picked the bomb up before the new round"); return; }
+				FireNamedEvent("round_start");
+				return;
+			}
+			if (step == 1)
+			{
+				if (c == C_PICKUP_AFTER_ACTIVITY)
+					NudgeClient(carrier);
+				if (!PutBombUnder(who)) { EndCase(false, "no bomb on the ground to put under the player"); return; }
+				return;
+			}
+			if (c == C_PICKUP_BLOCK_ENDS && step == 4)
+			{
+				EndCase(HasC4(carrier), HasC4(carrier) ? "block gone in the new round, bomb picked up" : "AFK flag still blocked the pickup in the next round");
+				return;
+			}
+			if (c == C_PICKUP_BLOCKED)
+				EndCase(!HasC4(who) && BombOnGround(), !HasC4(who) && BombOnGround() ? "AFK player did not pick the bomb up" : "AFK player picked the bomb up (or it vanished)");
+			else
+				EndCase(HasC4(who), HasC4(who) ? "player picked the bomb up on touch" : "player could not pick the bomb up");
 		}
 
 		case C_HUMAN_DROP:
@@ -1411,6 +1470,24 @@ void TeleportNear(int client, int ref)
 	GetClientAbsOrigin(ref, pos);
 	pos[0] += 120.0;
 	TeleportEntity(client, pos, NULL_VECTOR, NULL_VECTOR);
+}
+
+// Moves the bomb lying on the ground onto the client, so it touches them. false if there is none.
+bool PutBombUnder(int client)
+{
+	int ent = -1;
+	while ((ent = FindEntityByClassname(ent, "weapon_c4")) != -1)
+	{
+		if (GetEntPropEnt(ent, Prop_Send, "m_hOwnerEntity") == -1)
+		{
+			float pos[3];
+			GetClientAbsOrigin(client, pos);
+			pos[2] += 8.0;
+			TeleportEntity(ent, pos, NULL_VECTOR, view_as<float>({0.0, 0.0, 0.0}));
+			return true;
+		}
+	}
+	return false;
 }
 
 bool BombOnGround()

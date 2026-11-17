@@ -23,6 +23,7 @@
 #pragma semicolon 1
 
 #include <sdktools>
+#include <sdkhooks>
 #include <cstrike>
 
 #define PLUGIN_VERSION "1.5.0"
@@ -66,7 +67,8 @@ new Float:g_snapVelocity[ MAXPLAYERS + 1 ][ 3 ]; // GetEntPropVector()
 //Result of the latest comparison : true = unchanged since the snapshot (afk)
 new bool:g_afkJudged[ MAXPLAYERS + 1 ];
 
-//Judged afk at any comparison this round : never a receiver again for the rest of the round
+//Judged afk at any comparison this round : never a receiver, and cannot pick up the bomb, until it shows activity
+//(cleared at round start, or when the player touches the bomb in a state different from the snapshot)
 new bool:g_afkFlag[ MAXPLAYERS + 1 ];
 
 //Prevent re-running a function
@@ -115,7 +117,44 @@ public OnPluginStart()
 
 	//Prevent re-running a function
 	g_iAccount = FindSendPropOffs( "CCSPlayer", "m_iAccount" );
-	
+
+	//Players already connected when the plugin loads late
+	for ( new i = 1; i <= MaxClients; ++i )
+		if ( IsClientInGame( i ) )
+			SDKHook( i, SDKHook_WeaponCanUse, OnWeaponCanUse );
+}
+
+public OnClientPutInServer( client )
+{
+	SDKHook( client, SDKHook_WeaponCanUse, OnWeaponCanUse );
+}
+
+public OnClientDisconnect( client )
+{
+	g_snapUserId[ client ] = 0;
+	g_afkJudged[ client ] = false;
+	g_afkFlag[ client ] = false;
+}
+
+//A player judged afk cannot collect the bomb; the state is compared again at the touch,
+//so as soon as the player showed any activity the pickup goes through
+public Action:OnWeaponCanUse( client, weapon )
+{
+	if ( !g_afkFlag[ client ] )
+		return Plugin_Continue;
+
+	decl String:sClassName[ 32 ];
+	GetEdictClassname( weapon, sClassName, sizeof(sClassName) );
+	if ( !StrEqual( sClassName, "weapon_c4", false ) )
+		return Plugin_Continue;
+
+	//The bomb itself is not activity : the snapshot may hold it while it lies on the ground now
+	if ( sameState( client, true ) )
+		return Plugin_Handled;
+
+	g_afkFlag[ client ] = false;
+	g_afkJudged[ client ] = false;
+	return Plugin_Continue;
 }
 
 public Event_RoundStart( Handle:event, const String:name[], bool:dontBroadcast )
@@ -226,7 +265,6 @@ public Action:SecondScan( Handle:timer, Handle:bombUserIdAndRoundNumberData ) //
 				}
 
 				CS_DropWeapon( iBomber, GetPlayerWeaponSlot( iBomber, 4 ), true, true );
-				lateCheckDelay = 1.5;
 
 				if ( g_shouldMsgBombDrop ) //Do not repeat !
 				{
@@ -236,10 +274,18 @@ public Action:SecondScan( Handle:timer, Handle:bombUserIdAndRoundNumberData ) //
 					}
 					g_shouldMsgBombDrop = false;
 				}
+
+				//The afk player cannot pick the bomb up again (OnWeaponCanUse) : no re-drop needed, look for a new bomber if we want to lateCheck
+				if ( GetConVarInt( g_afkBomb_lateCheckNumber ) > 0 )
+				{
+					g_firstBombDrop = false;
+					CreateTimer( lateCheckDelay, CheckForBomber, roundNumber, TIMER_FLAG_NO_MAPCHANGE );
+				}
+				return;
 			}
 			//If we're latechecking, we must relaunch timer if the bomber is in the same state
 			//Reusing the datapack
-			CreateDataTimer( lateCheckDelay, SecondScan, Handle:bombUserIdAndRoundNumberData, TIMER_FLAG_NO_MAPCHANGE ); //if bomb is dropped then taken (happen sometimes; ex. de_dust T near the 3 boxes; may never end)
+			CreateDataTimer( lateCheckDelay, SecondScan, Handle:bombUserIdAndRoundNumberData, TIMER_FLAG_NO_MAPCHANGE );
 			WritePackCell( bombUserIdAndRoundNumberData, GetClientUserId( iBomber ) );
 			WritePackCell( bombUserIdAndRoundNumberData, roundNumber );
 		}
@@ -399,7 +445,7 @@ CompareAll()
 }
 
 //true if the client is exactly in the state of its snapshot (nothing done since)
-bool:sameState( any:iClient )
+bool:sameState( any:iClient, bool:ignoreBomb = false )
 {
 	if ( !IsClientInGame( iClient ) || !IsPlayerAlive( iClient ) || g_snapUserId[ iClient ] != GetClientUserId( iClient ) )
 		return false;
@@ -410,7 +456,7 @@ bool:sameState( any:iClient )
 		return false;
 
 	//Guns
-	for ( new i = 4; i >= 0; --i )
+	for ( new i = ignoreBomb ? 3 : 4; i >= 0; --i )
 		if ( g_snapGuns[ iClient ][ i ] != GetPlayerWeaponSlot( iClient, i ) )
 			return false;
 

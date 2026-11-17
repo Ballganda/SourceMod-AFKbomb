@@ -68,6 +68,32 @@ function Test-Benign([string]$line) {
     return $false
 }
 
+# A result line without the log prefix in front of its tag: "L <date>: [FAIL] name" -> "[FAIL] name".
+function Remove-LogPrefix([string]$line, [string]$tag) {
+    return $line -replace "^.*?(\[$tag\])", '$1'
+}
+
+# The problem to report when fewer cases reported a result than the suite started, else $null.
+# A reported case is one that passed, failed or was skipped.
+function Get-MissingCasesProblem([string]$startedLine, [int]$reported) {
+    if ($startedLine -match 'tests started \((\d+) cases\)' -and $reported -lt [int]$Matches[1]) {
+        return "only $reported of $($Matches[1]) cases reported a result"
+    }
+    return $null
+}
+
+# Removes a junction by deleting the link itself. Never recursive: the folder it points to and
+# everything in it stay. Anything that is not a link is left alone.
+function Remove-Junction([string]$path) {
+    $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    if (-not $item) { return }
+    if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        Write-Warning "$path is not a link; left in place"
+        return
+    }
+    [IO.Directory]::Delete($path, $false)
+}
+
 $problems = New-Object System.Collections.Generic.List[string]
 $warnings = New-Object System.Collections.Generic.List[string]
 $before = $null
@@ -94,24 +120,34 @@ if (-not $ScanOnly) {
     $inject = 0; if ($InjectError) { $inject = 1 }
     $srcdsArgs = "-console -game cstrike -condebug -tickrate 100 +sv_lan 1 +maxplayers 10 +bot_quota 0 " +
                  "+afkbomb_test_autorun 1 +afkbomb_test_inject_error $inject +afkbomb_test_wait_client $([int][bool]$WithClient) +map $Map"
-    if ($WithClient) {
-        # SourceMod file natives cannot open absolute paths; a junction inside the server's game dir exposes the client's cstrike folder
-        $junction = Join-Path $game 'afkbomb_client'
-        if (-not (Test-Path $junction)) { New-Item -ItemType Junction -Path $junction -Target (Split-Path $clientLog) | Out-Null }
-        $srcdsArgs += ' +afkbomb_test_client_log afkbomb_client/console.log'
+    $junction = Join-Path $game 'afkbomb_client'
+    $junctionCreated = $false
+    try {
+        if ($WithClient) {
+            # SourceMod file natives cannot open absolute paths; a junction inside the server's game dir exposes the client's cstrike folder
+            if (-not (Test-Path $junction)) {
+                New-Item -ItemType Junction -Path $junction -Target (Split-Path $clientLog) | Out-Null
+                $junctionCreated = $true
+            }
+            $srcdsArgs += ' +afkbomb_test_client_log afkbomb_client/console.log'
+        }
+        Write-Host "Starting srcds ($Map); the suite takes about 2.5 minutes..."
+        $proc = Start-Process (Join-Path $ServerDir 'srcds.exe') -ArgumentList $srcdsArgs -WorkingDirectory $ServerDir -PassThru
+        if ($WithClient) {
+            # the game port listens on the LAN IP, not 127.0.0.1
+            $ip = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1).IPv4Address.IPAddress
+            Start-Sleep -Seconds 20
+            Write-Host "Launching the CS:S client -> ${ip}:27015 (do not touch the game window)..."
+            Start-Process $steamExe -ArgumentList "-applaunch 240 -novid -windowed -w 1024 -h 768 -condebug +connect ${ip}:27015"
+        }
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            Stop-Process -Id $proc.Id -Force
+            $problems.Add("server did not quit within ${TimeoutSec}s (suite hung or never started); it was killed")
+        }
     }
-    Write-Host "Starting srcds ($Map); the suite takes about 2.5 minutes..."
-    $proc = Start-Process (Join-Path $ServerDir 'srcds.exe') -ArgumentList $srcdsArgs -WorkingDirectory $ServerDir -PassThru
-    if ($WithClient) {
-        # the game port listens on the LAN IP, not 127.0.0.1
-        $ip = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1).IPv4Address.IPAddress
-        Start-Sleep -Seconds 20
-        Write-Host "Launching the CS:S client -> ${ip}:27015 (do not touch the game window)..."
-        Start-Process $steamExe -ArgumentList "-applaunch 240 -novid -windowed -w 1024 -h 768 -condebug +connect ${ip}:27015"
-    }
-    if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-        Stop-Process -Id $proc.Id -Force
-        $problems.Add("server did not quit within ${TimeoutSec}s (suite hung or never started); it was killed")
+    finally {
+        # leave the server directory as it was found: only a link this run made is removed, also after a failure or timeout
+        if ($junctionCreated) { Remove-Junction $junction }
     }
 }
 
@@ -131,13 +167,12 @@ if (-not $ScanOnly) {
     if (-not $results.Count) { $problems.Add('the suite wrote nothing to afkbomb_tests.log (test plugin not loaded?)') }
     elseif (-not $summary) { $problems.Add('the suite started but never reached its summary line (crash or hang mid-suite)') }
     $started = @($results | Where-Object { $_ -match 'tests started \((\d+) cases\)' }) | Select-Object -Last 1
-    if ($started -and $started -match '\((\d+) cases\)' -and ($passed.Count + $failed.Count + $skipped.Count) -lt [int]$Matches[1]) {
-        $problems.Add("only $($passed.Count + $failed.Count) of $($Matches[1]) cases reported a result")
-    }
+    $missing = Get-MissingCasesProblem $started ($passed.Count + $failed.Count + $skipped.Count)
+    if ($missing) { $problems.Add($missing) }
 }
 if ($WithClient -and $skipped.Count) { $problems.Add("$($skipped.Count) real-client case(s) were skipped: the client never got into the game") }
-foreach ($l in $failed) { $problems.Add('test: ' + ($l -replace '^.*?(\[FAIL\])', '$1')) }
-foreach ($l in @($results | Where-Object { $_ -match '\[WARN\]' })) { $warnings.Add('test: ' + ($l -replace '^.*?(\[WARN\])', '$1')) }
+foreach ($l in $failed) { $problems.Add('test: ' + (Remove-LogPrefix $l 'FAIL')) }
+foreach ($l in @($results | Where-Object { $_ -match '\[WARN\]' })) { $warnings.Add('test: ' + (Remove-LogPrefix $l 'WARN')) }
 
 # --- every other log the run touched ---
 $logs = @(Get-ChildItem $smLogs -Filter *.log -ErrorAction SilentlyContinue | Where-Object { $_.FullName -ne $testLog })
@@ -164,9 +199,9 @@ foreach ($f in $logs) {
 
 # --- report ---
 Write-Host ''
-foreach ($l in $passed) { Write-Host ($l -replace '^.*?(\[PASS\])', '$1') -ForegroundColor DarkGreen }
-foreach ($l in $skipped) { Write-Host ($l -replace '^.*?(\[SKIP\])', '$1') -ForegroundColor DarkGray }
-foreach ($l in $failed) { Write-Host ($l -replace '^.*?(\[FAIL\])', '$1') -ForegroundColor Red }
+foreach ($l in $passed) { Write-Host (Remove-LogPrefix $l 'PASS') -ForegroundColor DarkGreen }
+foreach ($l in $skipped) { Write-Host (Remove-LogPrefix $l 'SKIP') -ForegroundColor DarkGray }
+foreach ($l in $failed) { Write-Host (Remove-LogPrefix $l 'FAIL') -ForegroundColor Red }
 Write-Host ''
 Write-Host "Cases: $($passed.Count) passed, $($failed.Count) failed, $($skipped.Count) skipped. Scanned $scanned new log lines in $($logs.Count) files."
 if ($warnings.Count) {

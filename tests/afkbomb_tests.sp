@@ -45,6 +45,10 @@ enum
 	C_DISABLED,
 	C_DISABLE_MID,
 	C_FREEZETIME_DELAY,
+	C_FREEZE_PRE_ACTIVITY,
+	C_FREEZE_CVAR_IGNORED,
+	C_ACTIVE_BUTTON,
+	C_ACTIVE_WEAPON,
 	C_MSG_ON,
 	C_MSG_OFF,
 	C_ROUND_RESTART,
@@ -85,6 +89,7 @@ int g_sayCount;        // say_team messages from the carrier during the case
 char g_lastSay[192];
 
 float g_origFreezetime;
+bool g_forceButton;    // OnPlayerRunCmd presses IN_FORWARD for the carrier
 ConVar g_cvAutorun;
 char g_logPath[PLATFORM_MAX_PATH];
 ConVar g_cvInjectError;
@@ -126,7 +131,11 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_ACTION_GIVE], NAME_LEN, "action=0 gives bomb to other T");
 	strcopy(g_caseNames[C_ACTION_LONE], NAME_LEN, "action=0 with no other T keeps bomb");
 	strcopy(g_caseNames[C_DISABLED], NAME_LEN, "afkbomb=0 never drops");
-	strcopy(g_caseNames[C_FREEZETIME_DELAY], NAME_LEN, "freezetime delays the drop");
+	strcopy(g_caseNames[C_FREEZETIME_DELAY], NAME_LEN, "idle carrier loses bomb afkbomb s after freeze ends");
+	strcopy(g_caseNames[C_FREEZE_PRE_ACTIVITY], NAME_LEN, "activity during freezetime does not save carrier");
+	strcopy(g_caseNames[C_FREEZE_CVAR_IGNORED], NAME_LEN, "afkbomb_freezetime=1 changes nothing, says deprecated");
+	strcopy(g_caseNames[C_ACTIVE_BUTTON], NAME_LEN, "carrier who pressed a button keeps bomb");
+	strcopy(g_caseNames[C_ACTIVE_WEAPON], NAME_LEN, "carrier who changed weapons keeps bomb");
 	strcopy(g_caseNames[C_LATE_DROP], NAME_LEN, "late carrier dropped after latechecks");
 	strcopy(g_caseNames[C_LATE_NONE], NAME_LEN, "latecheck=0 ignores late carrier");
 	strcopy(g_caseNames[C_DEAD_CARRIER], NAME_LEN, "dead carrier not given to other T");
@@ -157,6 +166,16 @@ public void OnPluginStart()
 
 	AddCommandListener(OnSayTeam, "say_team");
 	HookEvent("round_start", OnRoundStartSeen, EventHookMode_PostNoCopy);
+}
+
+public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3], float angles[3], int &weapon)
+{
+	if (g_forceButton && g_caseActive && client > 0 && GetClientUserId(client) == g_uidCarrier)
+	{
+		buttons |= IN_FORWARD;
+		return Plugin_Changed;
+	}
+	return Plugin_Continue;
 }
 
 public Action OnChatMsg(UserMsg id, BfRead bf, const int[] players, int playersNum, bool reliable, bool init)
@@ -294,6 +313,7 @@ void StartCase(int c)
 	g_uidExtra = 0;
 	g_sayCount = 0;
 	g_chatSeen = 0;
+	g_forceButton = false;
 	g_interfered = false;
 	g_lastSay[0] = '\0';
 	g_errSizeAtStart = ErrorLogSize();
@@ -502,11 +522,34 @@ void StartCase(int c)
 
 		case C_FREEZETIME_DELAY:
 		{
-			SetCvarInt("afkbomb_freezetime", 1);
 			SetCvarFloat("mp_freezetime", 4.0);
+			SetupCarrierRound(true, false, 1, 0, 1, 4.0); // freezetime ends at 4.0s, check at 5.0s
+			Schedule(3.5, c, 1); // still frozen: nothing may have happened
+			Schedule(4.7, c, 2); // freeze over, afkbomb window not yet: still held
+			Schedule(5.8, c, 3);
+		}
+
+		case C_FREEZE_PRE_ACTIVITY:
+		{
+			SetupCarrierRound(true, false, 1, 0, 1, 3.0); // freezetime ends at 3.0s
+			Schedule(1.5, c, 1); // moves during freezetime only
+			Schedule(3.7, c, 2);
+			Schedule(4.8, c, 3); // check at 4.0s
+		}
+
+		case C_FREEZE_CVAR_IGNORED:
+		{
+			SetCvarInt("afkbomb_freezetime", 1);
+			SetupCarrierRound(true, false, 1, 0, 1, 3.0); // same timing as with 0: check at 4.0s
+			Schedule(3.5, c, 1);
+			Schedule(4.8, c, 2);
+		}
+
+		case C_ACTIVE_BUTTON, C_ACTIVE_WEAPON:
+		{
 			SetupCarrierRound(true, false, 1, 0, 1);
-			Schedule(3.0, c, 1); // drop expected at ~6.0s (1s + 4s freezetime + 1s)
-			Schedule(7.5, c, 2);
+			Schedule(1.5, c, 1); // between the snapshot (1.0s) and the check (2.0s)
+			Schedule(2.6, c, 2);
 		}
 
 		case C_LATE_DROP:
@@ -542,7 +585,7 @@ void StartCase(int c)
 
 // Creates the carrier (optionally with a second idle T), sets cvars, and fires round_start.
 // withCarrier=false: no bomb yet (late-check cases spawn the carrier later).
-void SetupCarrierRound(bool withCarrier, bool withOther, int afkbomb, int latecheck, int action)
+void SetupCarrierRound(bool withCarrier, bool withOther, int afkbomb, int latecheck, int action, float freeze = 1.0)
 {
 	SetCvarInt("afkbomb", afkbomb);
 	SetCvarInt("afkbomb_latecheck", latecheck);
@@ -568,7 +611,7 @@ void SetupCarrierRound(bool withCarrier, bool withOther, int afkbomb, int latech
 		}
 		g_uidOther = GetClientUserId(other);
 	}
-	FireRoundStart();
+	FireRoundStart(freeze);
 }
 
 void Schedule(float delay, int c, int step)
@@ -748,17 +791,73 @@ void RunStep(int c, int step)
 			EndCase(true, "dropped on the 3rd latecheck");
 		}
 
-		case C_DROP_STILL, C_FREEZETIME_DELAY:
+		case C_DROP_STILL:
 		{
-			if (c == C_FREEZETIME_DELAY && step == 1)
-			{
-				if (carrier == 0) { EndCase(false, "carrier gone before check"); return; }
-				if (!HasC4(carrier)) { EndCase(false, "bomb dropped before freezetime delay elapsed"); return; }
-				return;
-			}
 			if (carrier == 0) { EndCase(false, "carrier gone before check"); return; }
 			if (HasC4(carrier)) { EndCase(false, "bomb still held after afkbomb delay"); return; }
 			EndCase(true, "bomb dropped");
+		}
+
+		case C_FREEZETIME_DELAY:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone before check"); return; }
+			if (step < 3)
+			{
+				if (!HasC4(carrier)) EndCase(false, "bomb taken before freezetime + afkbomb elapsed");
+				return;
+			}
+			if (HasC4(carrier)) { EndCase(false, "bomb still held afkbomb seconds after freezetime ended"); return; }
+			EndCase(true, "bomb taken afkbomb seconds after freezetime ended");
+		}
+
+		case C_FREEZE_PRE_ACTIVITY:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone before check"); return; }
+			if (step == 1)
+			{
+				float pos[3];
+				GetClientAbsOrigin(carrier, pos);
+				pos[0] += 200.0;
+				TeleportEntity(carrier, pos, NULL_VECTOR, NULL_VECTOR);
+				return;
+			}
+			if (step == 2)
+			{
+				if (!HasC4(carrier)) EndCase(false, "bomb taken before the window after freezetime ended");
+				return;
+			}
+			if (HasC4(carrier)) { EndCase(false, "movement during freezetime saved the carrier"); return; }
+			EndCase(true, "activity before freezetime ended did not count");
+		}
+
+		case C_FREEZE_CVAR_IGNORED:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone before check"); return; }
+			if (step == 1)
+			{
+				if (!HasC4(carrier)) EndCase(false, "bomb taken before freezetime ended");
+				return;
+			}
+			char desc[256];
+			FindConVar("afkbomb_freezetime").GetDescription(desc, sizeof(desc));
+			if (StrContains(desc, "deprecated", false) == -1) { EndCase(false, "description does not say deprecated"); return; }
+			if (HasC4(carrier)) { EndCase(false, "afkbomb_freezetime=1 delayed the check"); return; }
+			EndCase(true, "no effect on timing, described as deprecated");
+		}
+
+		case C_ACTIVE_BUTTON, C_ACTIVE_WEAPON:
+		{
+			if (carrier == 0) { EndCase(false, "carrier gone"); return; }
+			if (step == 1)
+			{
+				if (c == C_ACTIVE_BUTTON)
+					g_forceButton = true;
+				else
+					GivePlayerItem(carrier, "weapon_ak47");
+				return;
+			}
+			if (!HasC4(carrier)) { EndCase(false, "active carrier lost the bomb"); return; }
+			EndCase(true, "bomb kept");
 		}
 
 		case C_DROP_MOVING:
@@ -1043,9 +1142,24 @@ bool HasC4(int client)
 	return GetPlayerWeaponSlot(client, CS_SLOT_C4) != -1;
 }
 
-void FireRoundStart()
+// round_start now; round_freeze_end `freeze` seconds later (the game fires both; the suite fires them itself).
+// Checks begin at freeze end, so the default 1.0s also lets freshly spawned fakes settle.
+void FireRoundStart(float freeze = 1.0)
 {
-	Event ev = CreateEvent("round_start");
+	FireNamedEvent("round_start");
+	CreateTimer(freeze, Timer_FreezeEnd, g_curCase, TIMER_FLAG_NO_MAPCHANGE);
+}
+
+public Action Timer_FreezeEnd(Handle timer, any data)
+{
+	if (g_caseActive && view_as<int>(data) == g_curCase)
+		FireNamedEvent("round_freeze_end");
+	return Plugin_Stop;
+}
+
+void FireNamedEvent(const char[] name)
+{
+	Event ev = CreateEvent(name);
 	if (ev != null)
 	{
 		g_selfFire = true;

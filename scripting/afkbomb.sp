@@ -111,6 +111,7 @@ public OnPluginStart()
 	//Hooks on events
 	HookEvent( "round_start", Event_RoundStart );
 	HookEvent( "round_freeze_end", Event_FreezeEnd ); //Players are judged only from here on
+	HookEvent( "bomb_planted", Event_BombPlanted ); //Nothing left to guard : checks stop for the rest of the round
 
 	//Translation file
 	LoadTranslations( "afkbomb.phrases" );
@@ -167,6 +168,12 @@ public Event_RoundStart( Handle:event, const String:name[], bool:dontBroadcast )
 	}
 
 	return bool:Plugin_Handled;
+}
+
+//Bomb planted : bumping the round number invalidates every pending check of this round (the next round_start bumps it again)
+public Event_BombPlanted( Handle:event, const String:name[], bool:dontBroadcast )
+{
+	++g_roundNumber;
 }
 
 //Freezetime is over : players can act now, so this is where the judged period starts

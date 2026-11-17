@@ -94,6 +94,12 @@ if (-not $ScanOnly) {
     $inject = 0; if ($InjectError) { $inject = 1 }
     $srcdsArgs = "-console -game cstrike -condebug -tickrate 100 +sv_lan 1 +maxplayers 10 +bot_quota 0 " +
                  "+afkbomb_test_autorun 1 +afkbomb_test_inject_error $inject +afkbomb_test_wait_client $([int][bool]$WithClient) +map $Map"
+    if ($WithClient) {
+        # SourceMod file natives cannot open absolute paths; a junction inside the server's game dir exposes the client's cstrike folder
+        $junction = Join-Path $game 'afkbomb_client'
+        if (-not (Test-Path $junction)) { New-Item -ItemType Junction -Path $junction -Target (Split-Path $clientLog) | Out-Null }
+        $srcdsArgs += ' +afkbomb_test_client_log afkbomb_client/console.log'
+    }
     Write-Host "Starting srcds ($Map); the suite takes about 2.5 minutes..."
     $proc = Start-Process (Join-Path $ServerDir 'srcds.exe') -ArgumentList $srcdsArgs -WorkingDirectory $ServerDir -PassThru
     if ($WithClient) {

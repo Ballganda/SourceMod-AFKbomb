@@ -101,9 +101,11 @@ enum
 	C_CFG_SEMICOLON,
 	C_CFG_DEPRECATED_REWORDED, // issue #29: deprecation is declared at registration, not read from the description
 	C_CFG_DEPRECATED_WORD,
-	C_HUMAN_DROP,     // these three need a real client connected; skipped otherwise
+	C_HUMAN_DROP,     // these five need a real client connected; skipped otherwise
 	C_HUMAN_GIVE_MSG,
 	C_HUMAN_FIRST,
+	C_HUMAN_DROPW,    // issue #34: weapon and view model of a real client after its held bomb is taken
+	C_HUMAN_GIVEW,
 	C_CFG_MAP_CHANGE, // changes the map, so it runs last
 	NUM_CASES
 };
@@ -190,6 +192,8 @@ public void OnPluginStart()
 	strcopy(g_caseNames[C_NO_CANDIDATE], NAME_LEN, "action=0 with only an AFK teammate drops once");
 	strcopy(g_caseNames[C_LATE_NO_CANDIDATE], NAME_LEN, "latecheckaction=0 with only an AFK teammate drops once");
 	strcopy(g_caseNames[C_HUMAN_FIRST], NAME_LEN, "real client: active human preferred over a closer bot");
+	strcopy(g_caseNames[C_HUMAN_DROPW], NAME_LEN, "real client: drop while holding C4, primary and view model");
+	strcopy(g_caseNames[C_HUMAN_GIVEW], NAME_LEN, "real client: give while holding C4, primary and view model");
 	strcopy(g_caseNames[C_STRIP_ACTIVE], NAME_LEN, "action=0 strip while holding C4: primary in hand");
 	strcopy(g_caseNames[C_STRIP_SECONDARY], NAME_LEN, "strip while holding C4, no primary: secondary in hand");
 	strcopy(g_caseNames[C_STRIP_KNIFE], NAME_LEN, "strip while holding C4, no primary/secondary: knife in hand");
@@ -674,6 +678,20 @@ void StartCase(int c)
 			Schedule(2.5, c, 1);
 		}
 
+		case C_HUMAN_DROPW, C_HUMAN_GIVEW:
+		{
+			KillLooseGuns(); // an earlier case's dropped guns must not be picked up by this carrier
+			if (!SetupHumanCarrier()) { SkipCase("no real client connected"); return; }
+			bool giving = (c == C_HUMAN_GIVEW);
+			SetupCarrierRound(false, giving, 1, 0, giving ? 0 : 1); // drop: nobody to give to; give: "other" is active
+			int h = GetClientOfUserId(g_uidCarrier);
+			if (GetPlayerWeaponSlot(h, CS_SLOT_PRIMARY) == -1)
+				GivePlayerItem(h, "weapon_ak47");
+			FakeClientCommand(h, "use weapon_c4"); // the bomb in hand, through the game's own switch so the view model follows
+			Schedule(0.5, c, 1); // setup check, before the snapshot (1.0s)
+			Schedule(2.5, c, 2); // taken at 2.0s
+		}
+
 		case C_HUMAN_FIRST:
 		{
 			int h = FindHuman();
@@ -857,7 +875,11 @@ void StartCase(int c)
 					RemoveSlot(carrier, CS_SLOT_SECONDARY);
 				int hold = GetPlayerWeaponSlot(carrier, kind == C_STRIP_KEEPS ? CS_SLOT_SECONDARY : CS_SLOT_C4);
 				if (hold != -1)
-					SetEntPropEnt(carrier, Prop_Send, "m_hActiveWeapon", hold);
+				{
+					char holdName[32];
+					GetEdictClassname(hold, holdName, sizeof(holdName));
+					FakeClientCommand(carrier, "use %s", holdName); // the game's own switch, so the view model follows
+				}
 			}
 			Schedule(2.5, c, 1);
 		}
@@ -1594,34 +1616,28 @@ void RunStep(int c, int step)
 				if (!HasC4(other)) { EndCase(false, "bomb not given to the other T"); return; }
 			}
 			int slot = (kind == C_STRIP_ACTIVE) ? CS_SLOT_PRIMARY : (kind == C_STRIP_SECONDARY || kind == C_STRIP_KEEPS) ? CS_SLOT_SECONDARY : CS_SLOT_KNIFE;
-			int want = GetPlayerWeaponSlot(carrier, slot);
-			int have = GetEntPropEnt(carrier, Prop_Send, "m_hActiveWeapon");
-			if (have == -1) { EndCase(false, "old carrier left with no active weapon (empty hands)"); return; }
-			if (want == -1 || have != want)
+			char why[160];
+			EndCase(CheckWeaponInHand(carrier, slot, why, sizeof(why)), why);
+		}
+
+		case C_HUMAN_DROPW, C_HUMAN_GIVEW:
+		{
+			if (carrier == 0) { EndCase(false, "real client left"); return; }
+			if (step == 1)
 			{
-				char hn[32], wn[32], why[96];
-				GetEdictClassname(have, hn, sizeof(hn));
-				if (want != -1) GetEdictClassname(want, wn, sizeof(wn)); else strcopy(wn, sizeof(wn), "(none in slot)");
-				Format(why, sizeof(why), "old carrier holds %s, expected %s", hn, wn);
-				EndCase(false, why);
+				char setupWhy[160], why[192];
+				if (!CheckWeaponInHand(carrier, CS_SLOT_C4, setupWhy, sizeof(setupWhy)))
+				{
+					Format(why, sizeof(why), "setup: bomb and its view model not in hand: %s", setupWhy);
+					EndCase(false, why);
+				}
 				return;
 			}
-			// what the client draws: the view model must show the active weapon
-			int vm = GetEntPropEnt(carrier, Prop_Send, "m_hViewModel", 0);
-			if (vm != -1)
-			{
-				char why[128];
-				int vmWeapon = GetEntPropEnt(vm, Prop_Send, "m_hWeapon");
-				int vmModel = GetEntProp(vm, Prop_Send, "m_nModelIndex");
-				int wModel = GetEntProp(have, Prop_Send, "m_iViewModelIndex");
-				if (vmWeapon != have || vmModel != wModel)
-				{
-					Format(why, sizeof(why), "view model shows weapon %d model %d, active weapon %d expects model %d", vmWeapon, vmModel, have, wModel);
-					EndCase(false, why);
-					return;
-				}
-			}
-			EndCase(true, "old carrier holds the expected weapon, view model shows it");
+			if (HasC4(carrier)) { EndCase(false, "idle real client kept the bomb (was the client being played?)"); return; }
+			if (c == C_HUMAN_DROPW && !BombOnGround()) { EndCase(false, "bomb is not on the ground"); return; }
+			if (c == C_HUMAN_GIVEW && (other == 0 || !HasC4(other))) { EndCase(false, "bomb not given to the other T"); return; }
+			char why[160];
+			EndCase(CheckWeaponInHand(carrier, CS_SLOT_PRIMARY, why, sizeof(why)), why);
 		}
 
 		case C_ACTION_CT_ONLY:
@@ -2223,6 +2239,46 @@ bool BombOnGround()
 		if (GetEntPropEnt(ent, Prop_Send, "m_hOwnerEntity") == -1)
 			return true;
 	return false;
+}
+
+// true if the client holds the weapon of the given slot and its view model shows that weapon; why says what was seen.
+// A view model that cannot be read fails the check in client mode (afkbomb_test_wait_client 1) and for a real client;
+// otherwise the result says the view model was not checked.
+bool CheckWeaponInHand(int client, int slot, char[] why, int maxlen)
+{
+	int want = GetPlayerWeaponSlot(client, slot);
+	int have = GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon");
+	if (have == -1) { strcopy(why, maxlen, "old carrier left with no active weapon (empty hands)"); return false; }
+	char hn[32], wn[32];
+	GetEdictClassname(have, hn, sizeof(hn));
+	if (want == -1 || have != want)
+	{
+		if (want != -1) GetEdictClassname(want, wn, sizeof(wn)); else strcopy(wn, sizeof(wn), "(none in slot)");
+		Format(why, maxlen, "old carrier holds %s, expected %s", hn, wn);
+		return false;
+	}
+	// what the client draws: the view model must show the active weapon
+	int vm = GetEntPropEnt(client, Prop_Send, "m_hViewModel", 0);
+	if (vm == -1)
+	{
+		if (g_cvWaitClient.BoolValue || !IsFakeClient(client))
+		{
+			Format(why, maxlen, "holds %s, but its view model could not be read", hn);
+			return false;
+		}
+		Format(why, maxlen, "old carrier holds %s; no view model on this fake client, view model NOT checked", hn);
+		return true;
+	}
+	int vmWeapon = GetEntPropEnt(vm, Prop_Send, "m_hWeapon");
+	int vmModel = GetEntProp(vm, Prop_Send, "m_nModelIndex");
+	int wModel = GetEntProp(have, Prop_Send, "m_iViewModelIndex");
+	if (vmWeapon != have || vmModel != wModel)
+	{
+		Format(why, maxlen, "holds %s (%d, view model index %d), view model shows weapon %d model %d", hn, have, wModel, vmWeapon, vmModel);
+		return false;
+	}
+	Format(why, maxlen, "old carrier holds %s, view model shows it", hn);
+	return true;
 }
 
 bool HasC4(int client)

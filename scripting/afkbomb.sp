@@ -298,7 +298,7 @@ public Action:SecondScan( Handle:timer, Handle:bombUserIdAndCheckGenerationData 
 					return; //no latecheck problem are possible so
 				}
 
-				CS_DropWeapon( iBomber, GetPlayerWeaponSlot( iBomber, CS_SLOT_C4 ), true, true );
+				TakeBomb( iBomber, true );
 
 				if ( g_shouldMsgBombDrop ) //Do not repeat !
 				{
@@ -386,21 +386,7 @@ bool:stripAndGive2ActiveTBomb( any:iOldBomber )
 		return false;
 
 	//2- Strip c4
-	decl String:sClassName[ MAX_NAME_LENGTH ];
-
-	GetEdictClassname( iEntIndex, sClassName, sizeof(sClassName) );
-	if ( StrEqual( sClassName, "weapon_c4", false ) )
-	{
-		new bool:bInHand = ( GetEntPropEnt( iOldBomber, Prop_Send, "m_hActiveWeapon" ) == iEntIndex );
-
-		RemovePlayerItem( iOldBomber, iEntIndex );
-		AcceptEntityInput( iEntIndex, "kill" );
-
-		if ( bInHand ) //Do not leave empty hands : primary, else secondary, else knife
-		{
-			SwitchToBestWeapon( iOldBomber );
-		}
-	}
+	TakeBomb( iOldBomber, false );
 
 	//3- Give
 	GivePlayerItem( best, "weapon_c4" );
@@ -417,7 +403,32 @@ bool:stripAndGive2ActiveTBomb( any:iOldBomber )
 	return true;
 }
 
+//The one place the bomb is taken from a player : bDrop = true drops it to the ground, false removes it (to be given away)
+//A bomb that was in hand is replaced by the best weapon, so the hands are never empty; otherwise the weapon in hand stays
+TakeBomb( any:iClient, bool:bDrop )
+{
+	new iBomb = GetPlayerWeaponSlot( iClient, CS_SLOT_C4 );
+	if ( iBomb == -1 )
+		return;
+
+	new bool:bInHand = ( GetEntPropEnt( iClient, Prop_Send, "m_hActiveWeapon" ) == iBomb );
+
+	if ( bDrop )
+	{
+		CS_DropWeapon( iClient, iBomb, true, true );
+	}
+	else
+	{
+		RemovePlayerItem( iClient, iBomb );
+		AcceptEntityInput( iBomb, "kill" );
+	}
+
+	if ( bInHand )
+		SwitchToBestWeapon( iClient );
+}
+
 //Put the first owned weapon of slot 0 (primary), 1 (secondary), 2 (knife) in hand
+//Through the game's own weapon switch (the "use" client command, run by the server), so the client's view model follows
 SwitchToBestWeapon( any:iClient )
 {
 	for ( new iSlot = 0; iSlot <= 2; ++iSlot )
@@ -425,7 +436,9 @@ SwitchToBestWeapon( any:iClient )
 		new iWeapon = GetPlayerWeaponSlot( iClient, iSlot );
 		if ( iWeapon != -1 )
 		{
-			SetEntPropEnt( iClient, Prop_Send, "m_hActiveWeapon", iWeapon );
+			decl String:sClassName[ 32 ];
+			GetEdictClassname( iWeapon, sClassName, sizeof(sClassName) );
+			FakeClientCommand( iClient, "use %s", sClassName );
 			return;
 		}
 	}

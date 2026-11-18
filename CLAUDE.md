@@ -5,9 +5,13 @@ for Counter-Strike: Source. Goal: verify it still works on the current game buil
 
 ## Layout
 
-- `scripting/*.sp` — plugin source; `scripting/include/` — project-local includes
-- `plugins/*.smx` — build output (git-ignored)
-- `build.ps1` — compile; `build.ps1 -Deploy` also copies the `.smx` to the test server
+- `scripting/*.sp` — plugin source; `scripting/include/` — project-local includes (currently none)
+- `incs/` — git submodule of https://github.com/Ballganda/SourceMod-Incs, pinned to a commit; shared includes
+  (`instance_config.inc`) live in `incs/scripting/include/`. Never edit them here: change them in SourceMod-Incs,
+  then bump the pointer (`git -C incs pull origin main`, test, commit `incs`). Fresh clone: `git submodule update --init`.
+- `plugins/*.smx`, `plugins/*.zip` — build output (git-ignored)
+- `build.ps1` — compile; `-Deploy` also copies the `.smx` to the test server; `-Package` also writes the release
+  zip `plugins/afkbomb-<version>.zip` (plugin, translations, source, and the includes `afkbomb.sp` uses)
 - `tests/afkbomb_tests.sp` — regression suite plugin (`afkbomb_test` on the server console)
 - `test.ps1` — build, deploy, run the suite on a fresh srcds, then scan `afkbomb_tests.log`, SourceMod
   `L*.log`/`errors_*.log` and `console.log` for errors; exit code 0 = clean. `-WithClient` also launches the
@@ -20,7 +24,7 @@ for Counter-Strike: Source. Goal: verify it still works on the current game buil
   (`~/.claude/skills/srcds-testing/SKILL.md`, personal to this PC, not in this repo). Read it before starting
   srcds or the client, running `test.ps1`, or writing a test case.
 - Install: `C:\Users\user\cssds`; SourceMod in `cstrike\addons\sourcemod` (`build.ps1` uses its `spcomp.exe`).
-- Per-instance config: `scripting/include/instance_config.inc` writes `configs/<plugin>.cfg` under the SourceMod
+- Per-instance config: `incs/scripting/include/instance_config.inc` writes `configs/<plugin>.cfg` under the SourceMod
   path (never game `cfg`). Under a second SourceMod base path (see the skill) the file and the `L*.log` appear
   only under that path.
 

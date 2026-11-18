@@ -135,13 +135,25 @@ Behaviour fixes. No cvar or phrase was renamed or removed.
 
 ## Building from source
 
-`build.ps1` compiles `scripting/afkbomb.sp` with the `spcomp` of a local SourceMod install (`-SourceModDir`, or the
-`SOURCEMOD_DIR` environment variable) into `plugins/afkbomb.smx`. `-Deploy` also copies the plugin and
-translations to that install. To compile by hand:
+The `instance_config` include is maintained in [SourceMod-Incs](https://github.com/Ballganda/SourceMod-Incs) and
+pulled in as the `incs` git submodule, pinned to a commit. Clone with it:
 
 ```
-spcomp scripting/afkbomb.sp -iscripting/include -o plugins/afkbomb.smx
+git clone --recurse-submodules https://github.com/Ballganda/SourceMod-AFKbomb.git
 ```
+
+In an existing clone run `git submodule update --init`.
+
+`build.ps1` compiles `scripting/afkbomb.sp` with the `spcomp` of a local SourceMod install (`-SourceModDir`, or the
+`SOURCEMOD_DIR` environment variable) into `plugins/afkbomb.smx`. `-Deploy` also copies the plugin and
+translations to that install. `-Package` also writes the release zip, `plugins/afkbomb-<version>.zip`, with the
+include copied in from the submodule. To compile by hand:
+
+```
+spcomp scripting/afkbomb.sp -iincs/scripting/include -o plugins/afkbomb.smx
+```
+
+To move to a newer include: `git -C incs pull origin main`, run the tests, commit the new `incs` pointer.
 
 ## Tests
 

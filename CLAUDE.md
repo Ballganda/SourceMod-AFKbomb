@@ -16,33 +16,13 @@ for Counter-Strike: Source. Goal: verify it still works on the current game buil
 
 ## Test server
 
-- Install: `C:\Users\user\cssds` (CS:S dedicated server, **32-bit** `srcds.exe`, tickrate enabler VSP at 100 tick)
-- MetaMod:Source 1.12 and SourceMod 1.12 (stable branch) in `cstrike\addons\`
-- Compiler: `cstrike\addons\sourcemod\scripting\spcomp.exe`; stock includes in `scripting\include`
-- Start: `srcds.exe -console -game cstrike -condebug -tickrate 100 +sv_lan 1 +maxplayers 10 +map de_dust2`
-- Logs: `cstrike\console.log` (needs `-condebug`), `cstrike\addons\sourcemod\logs\L*.log` and `errors_*.log`
-- Console checks: `meta list`, `sm plugins list`, `sm exts list`, `sm plugins reload <name>`
-- RCON listens on the LAN IP, not 127.0.0.1
-- `Unable to load plugin "addons/metamod/bin/win64/server"` at boot is expected (the x64 VDF on a 32-bit server)
-- Testing without human clients: set `bot_join_after_player 0` or bots never join (`sv_hibernate_when_empty`
-  does not exist in CS:S). AI bots are not a valid "AFK" player even with `bot_stop 1` — their eye angles keep
-  swaying. Use an AI-less `CreateFakeClient` from a helper plugin; it stands perfectly still.
-- `PrintToChat*` skips fake clients, so chat output can only be seen with a real client connected.
-- Console output of a command run over RCON goes to the RCON reply, not to `console.log`.
-- `translations/*.txt` deploy to `addons\sourcemod\translations`
-- CS:S client on this PC: `C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Source`
-  (`cstrike_win64.exe`, launch with `steam.exe -applaunch 240 -condebug +connect <LAN IP>:27015`); chat it
-  receives lands in its `cstrike\console.log`. A plugin can put it on a team with `ChangeClientTeam` +
-  `CS_RespawnPlayer`, so no input is needed in the game window; left alone it is a genuine AFK player.
-- Fake clients joining/leaving end the round ("Game will not start until both teams have players") and the
-  game restarts it a few seconds later under whatever is running; set `mp_ignore_round_win_conditions 1`.
-- Fake clients spawned on neighbouring spawn points nudge each other and pick up each other's dropped bombs;
-  place them on far-apart spawn points for repeatable results.
+- Operating the server and the CS:S client for tests: the `srcds-testing` skill
+  (`~/.claude/skills/srcds-testing/SKILL.md`, personal to this PC, not in this repo). Read it before starting
+  srcds or the client, running `test.ps1`, or writing a test case.
+- Install: `C:\Users\user\cssds`; SourceMod in `cstrike\addons\sourcemod` (`build.ps1` uses its `spcomp.exe`).
 - Per-instance config: `scripting/include/instance_config.inc` writes `configs/<plugin>.cfg` under the SourceMod
-  path (never game `cfg`). A second SourceMod base path is testable: copy `addons\sourcemod` to
-  `addons\sourcemod_b` (`Copy-Item -Recurse`), start srcds with `+sm_basepath addons/sourcemod_b`; the file and
-  the `L*.log` then appear only under `sourcemod_b`. Delete the copy afterwards.
-- `LogToFileEx` paths are relative to the game dir; use `BuildPath(Path_SM, ...)` for `logs/`.
+  path (never game `cfg`). Under a second SourceMod base path (see the skill) the file and the `L*.log` appear
+  only under that path.
 
 ## SourcePawn notes
 

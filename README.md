@@ -183,4 +183,6 @@ deploys, runs it on a fresh local srcds and scans the server and SourceMod logs;
 
 ## License
 
-See [LICENSE](LICENSE).
+GNU General Public License, version 3: see [LICENSE](LICENSE). SourceMod requires plugins to be released
+under GPL v3 ([SourceMod license](https://www.sourcemod.net/license.php)). The release zip includes the license as
+`addons/sourcemod/scripting/afkbomb-LICENSE.txt`.

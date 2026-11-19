@@ -11,7 +11,8 @@ for Counter-Strike: Source. Goal: verify it still works on the current game buil
   then bump the pointer (`git -C incs pull origin main`, test, commit `incs`). Fresh clone: `git submodule update --init`.
 - `plugins/*.smx`, `plugins/*.zip` — build output (git-ignored)
 - `build.ps1` — compile; `-Deploy` also copies the `.smx` to the test server; `-Package` also writes the release
-  zip `plugins/afkbomb-<version>.zip` (plugin, translations, source, and the includes `afkbomb.sp` uses)
+  zip `plugins/afkbomb-<version>.zip` (plugin, translations, source, the includes `afkbomb.sp` uses, and the GPL v3 `LICENSE` as
+  `scripting/afkbomb-LICENSE.txt`)
 - `tests/afkbomb_tests.sp` — regression suite plugin (`afkbomb_test` on the server console)
 - `test.ps1` — build, deploy, run the suite on a fresh srcds, then scan `afkbomb_tests.log`, SourceMod
   `L*.log`/`errors_*.log` and `console.log` for errors; exit code 0 = clean. `-WithClient` also launches the

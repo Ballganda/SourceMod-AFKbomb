@@ -6,7 +6,8 @@ the bomb to an active teammate or drops it, so one absent player cannot stall a 
 This is a maintained fork of **[CS:S+GO] Afk Bomb** by RedSword / Bob Le Ponge
 ([AlliedModders thread](https://forums.alliedmods.net/showthread.php?p=1429371), last original version 1.5.0,
 2012). Version 1.5.1 was checked against the current CS:S build with SourceMod 1.12 and fixes the problems found.
-1.5.2 rewrites the source in current SourcePawn syntax without changing behaviour.
+1.5.2 rewrites the source in current SourcePawn syntax without changing behaviour. 1.5.3 relicenses it
+under GPL v3, as SourceMod requires.
 
 In the original author's words, the point is "short-afking": a player who alt-tabs for a few seconds, or spends
 the whole freezetime in the buy menu, should not leave the team without its bomb. It is not an AFK kicker; use
@@ -19,11 +20,11 @@ it next to one if you also want to deal with long-term AFK players.
   extensions, which ship with SourceMod.
 - No gamedata file. Dropping the bomb uses SourceMod's built-in `CS_DropWeapon`.
 
-The original thread reports 1.5.0 working on CS:GO. 1.5.1 and 1.5.2 have only been tested on CS:S.
+The original thread reports 1.5.0 working on CS:GO. 1.5.1 to 1.5.3 have only been tested on CS:S.
 
 ## Installation
 
-1. Download `afkbomb-1.5.2.zip` from the [Releases](https://github.com/Ballganda/SourceMod-AFKbomb/releases)
+1. Download `afkbomb-1.5.3.zip` from the [Releases](https://github.com/Ballganda/SourceMod-AFKbomb/releases)
    page.
 2. Extract it into the server's `cstrike` folder. The zip already contains the `addons/sourcemod/...` folders,
    so the files land here:
@@ -34,9 +35,10 @@ The original thread reports 1.5.0 working on CS:GO. 1.5.1 and 1.5.2 have only be
    | Translations | `cstrike/addons/sourcemod/translations/afkbomb.phrases.txt` | **yes**: without it the drop and give messages fail with a missing-phrase error |
    | Source | `cstrike/addons/sourcemod/scripting/afkbomb.sp` | no, only to recompile |
    | Include | `cstrike/addons/sourcemod/scripting/include/instance_config.inc` | no, only to recompile |
+   | License | `cstrike/addons/sourcemod/scripting/afkbomb-LICENSE.txt` | no, the GPL v3 text |
 
 3. Restart the server, or change the map, or run `sm plugins load afkbomb` in the server console.
-4. Check it loaded: `sm plugins list` shows `Afk Bomb (1.5.2)`, and `afkbombversion` prints `1.5.2`.
+4. Check it loaded: `sm plugins list` shows `Afk Bomb (1.5.3)`, and `afkbombversion` prints `1.5.3`.
 5. On first load the plugin writes its settings file, `cstrike/addons/sourcemod/configs/afkbomb.cfg`, with every
    cvar at its default. Edit that file to change settings; it is applied on every map.
 
@@ -83,7 +85,7 @@ empty.
 | `afkbomb_latecheckdelay` | `5.0` | Seconds per late-check interval. Minimum `1.0`. |
 | `afkbomb_latecheckaction` | `1` | Carrier AFK at a late check: `0` give, `1` drop. Giving is not recommended here, since a player can fake being AFK to send the bomb across the map. |
 | `afkbomb_freezetime` | `0` | **Deprecated** since 1.5.1, ignored. Checks always start when freezetime ends. |
-| `afkbombversion` | `1.5.2` | Plugin version (read-only). |
+| `afkbombversion` | `1.5.3` | Plugin version (read-only). |
 
 Example `addons/sourcemod/configs/afkbomb.cfg` lines: `afkbomb 3` or `afkbomb_action "1"`. Lines starting with
 `//` are comments.
@@ -96,6 +98,14 @@ SourceMod's `ServerLang`), so every player sees the same text.
 Languages: English, French, Russian (drop message only), Brazilian Portuguese, Polish, Dutch, German, Lithuanian,
 Korean, Slovak and Czech. Translators credited in the original thread: noPASARAN (ru), away000 (pt), sajmon83 (pl),
 Groger (nl), Dr. Greg House (de), hleV (lt), Blowst (ko), musosoft (sk, cze), RedSword (fr).
+
+## Changes in 1.5.3
+
+License and source only, no behaviour change. No cvar, phrase or config entry was added, renamed or removed.
+
+- The plugin is licensed under GPL v3, as SourceMod requires of plugins; 1.5.1 and 1.5.2 were published as CC0.
+  The release zip includes the license text and `afkbomb.sp` carries the GPL notice.
+- The `instance_config.inc` registration function takes a typed `ConVar` instead of a `Handle`.
 
 ## Changes in 1.5.2
 
@@ -179,7 +189,7 @@ deploys, runs it on a fresh local srcds and scans the server and SourceMod logs;
 - dalto (botdropbomb drop code), AltPluzF4, AtomicStryker, Dr!fter, TnTSCS (drop-weapon signatures), psychonic
   (memory leak report, approval), sinblaster (testing), and the SourceMod team (`CS_DropWeapon`), as credited in
   the original.
-- **BallGanda**: 1.5.1 and 1.5.2.
+- **BallGanda**: 1.5.1 to 1.5.3.
 
 ## License
 

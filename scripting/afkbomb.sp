@@ -43,7 +43,7 @@
 #include <cstrike>
 #include <instance_config> //settings file in this server's own SourceMod folder (not the shared game cfg folder)
 
-#define PLUGIN_VERSION "1.5.2"
+#define PLUGIN_VERSION "1.5.3"
 
 //Chat colour codes (control characters, written as escapes)
 #define CHAT_DEFAULT "\x01"

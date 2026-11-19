@@ -79,9 +79,6 @@ new bool:g_isAfk[ MAXPLAYERS + 1 ];
 //afkbomb 0 ends the round's checks for good (OnAfkBombChanged) : raising it again only counts from the next round
 new bool:g_roundChecked;
 
-//Prevent re-running a function
-new g_iAccount;
-
 //Only msg once for dropping bomb
 new bool:g_shouldMsgBombDrop;
 
@@ -136,9 +133,6 @@ public OnPluginStart()
 
 	//Translation file
 	LoadTranslations( "afkbomb.phrases" );
-
-	//Prevent re-running a function
-	g_iAccount = FindSendPropOffs( "CCSPlayer", "m_iAccount" );
 
 	//Players already connected when the plugin loads late
 	for ( new i = 1; i <= MaxClients; ++i )
@@ -479,7 +473,7 @@ SnapshotAll()
 		if ( IsClientInGame( i ) && GetClientTeam( i ) == CS_TEAM_T && IsPlayerAlive( i ) )
 		{
 			g_snapUserId[ i ] = GetClientUserId( i );
-			g_snapMoney[ i ] = GetEntData( i, g_iAccount );
+			g_snapMoney[ i ] = GetEntProp( i, Prop_Send, "m_iAccount" );
 			g_snapArmor[ i ] = GetClientArmor( i );
 			g_snapButtons[ i ] = GetClientButtons( i );
 
@@ -507,7 +501,7 @@ bool:sameState( any:iClient, bool:ignoreBomb = false )
 	if ( !IsClientInGame( iClient ) || !IsPlayerAlive( iClient ) || g_snapUserId[ iClient ] != GetClientUserId( iClient ) )
 		return false;
 
-	if ( g_snapMoney[ iClient ] != GetEntData( iClient, g_iAccount ) ||
+	if ( g_snapMoney[ iClient ] != GetEntProp( iClient, Prop_Send, "m_iAccount" ) ||
 			g_snapArmor[ iClient ] != GetClientArmor( iClient ) ||
 			g_snapButtons[ iClient ] != GetClientButtons( iClient ) )
 		return false;

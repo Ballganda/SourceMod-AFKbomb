@@ -21,6 +21,7 @@
 	for 1.4.2 : Whole Sourcemod crew  --> no more need for SDKCall since SM 1.4.0; so no more gamedata needed
 */
 #pragma semicolon 1
+#pragma newdecls required
 
 #include <sdktools>
 #include <sdkhooks>
@@ -33,7 +34,7 @@
 #define CHAT_DEFAULT "\x01"
 #define CHAT_GREEN "\x04"
 
-public Plugin:myinfo =
+public Plugin myinfo =
 {
 	name = "Afk Bomb",
 	author = "RedSword / Bob Le Ponge, BallGanda",
@@ -43,52 +44,52 @@ public Plugin:myinfo =
 };
 
 //Cvars
-new Handle:g_afkBomb;
-new Handle:g_afkBomb_addFreeze;
-new Handle:g_afkBomb_action;
+ConVar g_afkBomb;
+ConVar g_afkBomb_addFreeze;
+ConVar g_afkBomb_action;
 
-new Handle:g_afkBomb_displayMsg;
+ConVar g_afkBomb_displayMsg;
 
-new Handle:g_afkBomb_lateCheckNumber; // 0 = late check disabled
-new Handle:g_afkBomb_lateCheckDelay; // 0 = late check disabled
-new Handle:g_afkBomb_lateCheckAction; //since 1.5; 1=drop, 0=give to an active T
+ConVar g_afkBomb_lateCheckNumber; // 0 = late check disabled
+ConVar g_afkBomb_lateCheckDelay; // 0 = late check disabled
+ConVar g_afkBomb_lateCheckAction; //since 1.5; 1=drop, 0=give to an active T
 
 //Check-generation token : advanced at round start and when the bomb is planted; a pending check that carries an older value is dropped
 //Avoid a possible (rare) glitch where the same player would spawn with the bomb at the same place with a high CVar "afkbomb" value
-static g_checkGeneration = 0;
+static int g_checkGeneration = 0;
 
 //State snapshot of every living terrorist, taken when freezetime ends (no per-tick hook)
 //A later comparison with the current state tells whether the player did anything in between
-new g_snapUserId[ MAXPLAYERS + 1 ]; //0 = no snapshot; userid prevents a new player taking a leaver's slot
-new g_snapMoney[ MAXPLAYERS + 1 ];
-new g_snapArmor[ MAXPLAYERS + 1 ];
-new g_snapButtons[ MAXPLAYERS + 1 ];
-new g_snapGuns[ MAXPLAYERS + 1 ][ CS_SLOT_C4 + 1 ]; // GetPlayerWeaponSlot(), slots 0 to CS_SLOT_C4
-new Float:g_snapEye[ MAXPLAYERS + 1 ][ 3 ]; // GetClientEyeAngles()
-new Float:g_snapAngle[ MAXPLAYERS + 1 ][ 3 ]; // GetClientAbsAngles()
-new Float:g_snapOrigin[ MAXPLAYERS + 1 ][ 3 ]; // GetClientAbsOrigin()
-new Float:g_snapVelocity[ MAXPLAYERS + 1 ][ 3 ]; // GetEntPropVector()
+int g_snapUserId[ MAXPLAYERS + 1 ]; //0 = no snapshot; userid prevents a new player taking a leaver's slot
+int g_snapMoney[ MAXPLAYERS + 1 ];
+int g_snapArmor[ MAXPLAYERS + 1 ];
+int g_snapButtons[ MAXPLAYERS + 1 ];
+int g_snapGuns[ MAXPLAYERS + 1 ][ CS_SLOT_C4 + 1 ]; // GetPlayerWeaponSlot(), slots 0 to CS_SLOT_C4
+float g_snapEye[ MAXPLAYERS + 1 ][ 3 ]; // GetClientEyeAngles()
+float g_snapAngle[ MAXPLAYERS + 1 ][ 3 ]; // GetClientAbsAngles()
+float g_snapOrigin[ MAXPLAYERS + 1 ][ 3 ]; // GetClientAbsOrigin()
+float g_snapVelocity[ MAXPLAYERS + 1 ][ 3 ]; // GetEntPropVector()
 
 //Afk = result of the latest comparison : true = unchanged since the snapshot
 //Every comparison re-judges every snapshotted terrorist. While afk : never a receiver, and cannot pick up the bomb
 //(cleared at round start, at a comparison that finds the player changed, or when the player touches the bomb
 //in a state different from the snapshot)
-new bool:g_isAfk[ MAXPLAYERS + 1 ];
+bool g_isAfk[ MAXPLAYERS + 1 ];
 
 //Decided once at round start : is this round checked ? (a later change of afkbomb does not start a check)
 //afkbomb 0 ends the round's checks for good (OnAfkBombChanged) : raising it again only counts from the next round
-new bool:g_roundChecked;
+bool g_roundChecked;
 
 //Only msg once for dropping bomb
-new bool:g_shouldMsgBombDrop;
+bool g_shouldMsgBombDrop;
 
 //If the first drop si the next one(to change delay things)
-new bool:g_firstBombDrop;
+bool g_firstBombDrop;
 
 //To count the number of check done for lateCheck
-new g_lateCheckCount;
+int g_lateCheckCount;
 
-public OnPluginStart()
+public void OnPluginStart()
 {
 	//CVARs
 	CreateConVar( "afkbombversion", PLUGIN_VERSION, "Afk Bomb version", FCVAR_SPONLY | FCVAR_REPLICATED | FCVAR_NOTIFY | FCVAR_DONTRECORD );
@@ -124,7 +125,7 @@ public OnPluginStart()
 	InstCfg_Ensure();
 
 	//afkbomb 0 cancels the running checks at once, not only when their timer fires
-	HookConVarChange( g_afkBomb, OnAfkBombChanged );
+	g_afkBomb.AddChangeHook( OnAfkBombChanged );
 
 	//Hooks on events
 	HookEvent( "round_start", Event_RoundStart );
@@ -135,34 +136,34 @@ public OnPluginStart()
 	LoadTranslations( "afkbomb.phrases" );
 
 	//Players already connected when the plugin loads late
-	for ( new i = 1; i <= MaxClients; ++i )
+	for ( int i = 1; i <= MaxClients; ++i )
 		if ( IsClientInGame( i ) )
 			SDKHook( i, SDKHook_WeaponCanUse, OnWeaponCanUse );
 }
 
 //Every map : the settings file wins over whatever was set before
-public OnConfigsExecuted()
+public void OnConfigsExecuted()
 {
 	InstCfg_Apply();
 }
 
 //afkbomb set to 0 : every pending check of this round is dropped and the round stays unchecked,
 //so setting it back to a positive value takes effect from the next round only
-public OnAfkBombChanged( Handle:convar, const String:oldValue[], const String:newValue[] )
+public void OnAfkBombChanged( ConVar convar, const char[] oldValue, const char[] newValue )
 {
-	if ( GetConVarInt( convar ) < 1 )
+	if ( convar.IntValue < 1 )
 	{
 		++g_checkGeneration;
 		g_roundChecked = false;
 	}
 }
 
-public OnClientPutInServer( client )
+public void OnClientPutInServer( int client )
 {
 	SDKHook( client, SDKHook_WeaponCanUse, OnWeaponCanUse );
 }
 
-public OnClientDisconnect( client )
+public void OnClientDisconnect( int client )
 {
 	g_snapUserId[ client ] = 0;
 	g_isAfk[ client ] = false;
@@ -170,12 +171,12 @@ public OnClientDisconnect( client )
 
 //A player judged afk cannot collect the bomb; the state is compared again at the touch,
 //so as soon as the player showed any activity the pickup goes through
-public Action:OnWeaponCanUse( client, weapon )
+public Action OnWeaponCanUse( int client, int weapon )
 {
 	if ( !g_isAfk[ client ] )
 		return Plugin_Continue;
 
-	decl String:sClassName[ 32 ];
+	char sClassName[ 32 ];
 	GetEdictClassname( weapon, sClassName, sizeof(sClassName) );
 	if ( !StrEqual( sClassName, "weapon_c4", false ) )
 		return Plugin_Continue;
@@ -188,103 +189,104 @@ public Action:OnWeaponCanUse( client, weapon )
 	return Plugin_Continue;
 }
 
-public Event_RoundStart( Handle:event, const String:name[], bool:dontBroadcast )
+public void Event_RoundStart( Event event, const char[] name, bool dontBroadcast )
 {
 	//Whatever afkbomb is : the previous round's checks end and the afk judgements (and so the pickup block) end with the round
 	++g_checkGeneration; //Invalidates every check of the previous round
 	g_firstBombDrop = true;
 	ClearSnapshots();
-	g_roundChecked = ( GetConVarInt( g_afkBomb ) >= 1 );
+	g_roundChecked = ( g_afkBomb.IntValue >= 1 );
 }
 
 //Bomb planted : advancing the check-generation token invalidates every pending check of this round (the next round_start advances it again)
-public Event_BombPlanted( Handle:event, const String:name[], bool:dontBroadcast )
+public void Event_BombPlanted( Event event, const char[] name, bool dontBroadcast )
 {
 	++g_checkGeneration;
 }
 
 //Freezetime is over : players can act now, so this is where the judged period starts
-public Event_FreezeEnd( Handle:event, const String:name[], bool:dontBroadcast )
+public void Event_FreezeEnd( Event event, const char[] name, bool dontBroadcast )
 {
-	if ( g_roundChecked && GetConVarInt( g_afkBomb ) >= 1 )
-		CheckForBomber( INVALID_HANDLE, g_checkGeneration );
+	if ( g_roundChecked && g_afkBomb.IntValue >= 1 )
+		CheckForBomber( null, g_checkGeneration );
 }
 
 //Check who has the bomb; Needs to be delayed to work
-public Action:CheckForBomber( Handle:timer, any:checkGeneration )
+public Action CheckForBomber( Handle timer, any checkGeneration )
 {
 	//Avoid 2 timers identical
 	if ( checkGeneration != g_checkGeneration )
-		return;
+		return Plugin_Continue;
 
 	//afkbomb 0 cancels every scheduled check
-	if ( GetConVarInt( g_afkBomb ) < 1 )
-		return;
+	if ( g_afkBomb.IntValue < 1 )
+		return Plugin_Continue;
 
 	//If we're to look for the bomber, that means he's not found yet and that he won't repeat his speech
 	g_shouldMsgBombDrop = true;
 	g_lateCheckCount = 0;
 
-	for ( new i = MaxClients; i >= 1; --i )
+	for ( int i = MaxClients; i >= 1; --i )
 	{
 		if ( IsClientInGame( i ) &&
 				IsPlayerAlive( i ) &&
 				GetPlayerWeaponSlot( i, CS_SLOT_C4 ) != -1 ) //if the player is carrying the bomb
 		{
 			FirstScan( i );
-			return; //We found the bomber, no need to rerun the function
+			return Plugin_Continue; //We found the bomber, no need to rerun the function
 		}
 	}
 
 	//We rerun the function if not found
 	ScheduleNextBomberSearch( checkGeneration );
+	return Plugin_Continue;
 }
 
 //Schedule the next search for a bomber, one late-check delay from now (only if we want to lateCheck)
-ScheduleNextBomberSearch( any:checkGeneration )
+void ScheduleNextBomberSearch( int checkGeneration )
 {
-	if ( GetConVarInt( g_afkBomb_lateCheckNumber ) > 0 )
+	if ( g_afkBomb_lateCheckNumber.IntValue > 0 )
 	{
 		g_firstBombDrop = false;
-		CreateTimer( GetConVarFloat( g_afkBomb_lateCheckDelay ), CheckForBomber, checkGeneration, TIMER_FLAG_NO_MAPCHANGE );
+		CreateTimer( g_afkBomb_lateCheckDelay.FloatValue, CheckForBomber, checkGeneration, TIMER_FLAG_NO_MAPCHANGE );
 	}
 }
 
 //Record bomber initial state
-Action:FirstScan( any:iBomber )
+void FirstScan( int iBomber )
 {
-	if ( GetConVarInt( g_afkBomb ) >= 1 )
+	if ( g_afkBomb.IntValue >= 1 )
 	{
 		//We consider that by default, we're late-checking
-		new Float:timeUntilScan = GetConVarFloat( g_afkBomb_lateCheckDelay );
+		float timeUntilScan = g_afkBomb_lateCheckDelay.FloatValue;
 
 		if ( g_firstBombDrop ) //If we're not late-checking
-			timeUntilScan = GetConVarFloat( g_afkBomb );
+			timeUntilScan = g_afkBomb.FloatValue;
 
 		SnapshotAll(); //Save the state of every living terrorist
 
-		new Handle:bombUserIdAndCheckGenerationData; //CreateDataPack() not needed !!
-		CreateDataTimer( timeUntilScan, SecondScan, Handle:bombUserIdAndCheckGenerationData, TIMER_FLAG_NO_MAPCHANGE );
-		WritePackCell( bombUserIdAndCheckGenerationData, GetClientUserId( iBomber ) );
-		WritePackCell( bombUserIdAndCheckGenerationData, g_checkGeneration );
+		DataPack bombUserIdAndCheckGenerationData; //CreateDataPack() not needed !!
+		CreateDataTimer( timeUntilScan, SecondScan, bombUserIdAndCheckGenerationData, TIMER_FLAG_NO_MAPCHANGE );
+		bombUserIdAndCheckGenerationData.WriteCell( GetClientUserId( iBomber ) );
+		bombUserIdAndCheckGenerationData.WriteCell( g_checkGeneration );
 	}
 }
 
 //Check if bomber's state changed
-public Action:SecondScan( Handle:timer, Handle:bombUserIdAndCheckGenerationData ) //UserId used to prevent a possible problem if someone would leave and take bomber's "state" within 0.5 sec (lol)
+public Action SecondScan( Handle timer, DataPack bombUserIdAndCheckGenerationData ) //UserId used to prevent a possible problem if someone would leave and take bomber's "state" within 0.5 sec (lol)
 {
 	//Using the pack right now so it's cleaner to read the rest of the code
-	ResetPack( bombUserIdAndCheckGenerationData );
-	new bomberUserId = ReadPackCell( bombUserIdAndCheckGenerationData );
-	new checkGeneration = ReadPackCell( bombUserIdAndCheckGenerationData );
+	bombUserIdAndCheckGenerationData.Reset();
+	int bomberUserId = bombUserIdAndCheckGenerationData.ReadCell();
+	int checkGeneration = bombUserIdAndCheckGenerationData.ReadCell();
 
-	new Float:lateCheckDelay = GetConVarFloat( g_afkBomb_lateCheckDelay );
+	float lateCheckDelay = g_afkBomb_lateCheckDelay.FloatValue;
 
-	new iBomber = GetClientOfUserId( bomberUserId );
+	int iBomber = GetClientOfUserId( bomberUserId );
 
 	//afkbomb 0 cancels the check in progress : nothing is judged, dropped or rescheduled
 	if ( g_checkGeneration == checkGeneration && //If no round start or bomb plant happened since the check was scheduled
-			GetConVarInt( g_afkBomb ) >= 1 )
+			g_afkBomb.IntValue >= 1 )
 	{
 		CompareAll(); //Judge every snapshotted terrorist in one go
 
@@ -293,25 +295,25 @@ public Action:SecondScan( Handle:timer, Handle:bombUserIdAndCheckGenerationData 
 				IsPlayerAlive( iBomber ) &&
 				g_isAfk[ iBomber ] ) //state unchanged ?
 		{
-			if ( g_firstBombDrop || ++g_lateCheckCount >= GetConVarInt( g_afkBomb_lateCheckNumber ) )
+			if ( g_firstBombDrop || ++g_lateCheckCount >= g_afkBomb_lateCheckNumber.IntValue )
 			{
 				//Give to the best active teammate if the action says so; otherwise (or if nobody qualifies) drop
-				if ( ( ( g_firstBombDrop && GetConVarInt( g_afkBomb_action ) == 0 ) ||
-						( !g_firstBombDrop && GetConVarInt( g_afkBomb_lateCheckAction ) == 0 ) ) &&
+				if ( ( ( g_firstBombDrop && g_afkBomb_action.IntValue == 0 ) ||
+						( !g_firstBombDrop && g_afkBomb_lateCheckAction.IntValue == 0 ) ) &&
 						stripAndGive2ActiveTBomb( iBomber ) ) //The function takes care of its own verbose
 				{
-					CheckForBomber( INVALID_HANDLE, checkGeneration ); //lets start next check right now
-					return; //no latecheck problem are possible so
+					CheckForBomber( null, checkGeneration ); //lets start next check right now
+					return Plugin_Continue; //no latecheck problem are possible so
 				}
 
 				TakeBomb( iBomber, true );
 
 				if ( g_shouldMsgBombDrop ) //Do not repeat !
 				{
-					if ( GetConVarInt( g_afkBomb_displayMsg ) == 1 )
+					if ( g_afkBomb_displayMsg.IntValue == 1 )
 					{
 						//Server language, not the speaker's
-						decl String:sDropMsg[ 192 ];
+						char sDropMsg[ 192 ];
 						Format( sDropMsg, sizeof(sDropMsg), "%T", "Drop Bomb", LANG_SERVER );
 						FakeClientCommand( iBomber, "say_team [Afk Bomb] %s", sDropMsg );
 					}
@@ -320,21 +322,22 @@ public Action:SecondScan( Handle:timer, Handle:bombUserIdAndCheckGenerationData 
 
 				//The afk player cannot pick the bomb up again (OnWeaponCanUse) : no re-drop needed, look for a new bomber if we want to lateCheck
 				ScheduleNextBomberSearch( checkGeneration );
-				return;
+				return Plugin_Continue;
 			}
 			//If we're latechecking, we must relaunch timer if the bomber is in the same state
 			//Every interval is judged on its own : a new snapshot of every living terrorist starts it
 			SnapshotAll();
 			//Reusing the datapack
-			CreateDataTimer( lateCheckDelay, SecondScan, Handle:bombUserIdAndCheckGenerationData, TIMER_FLAG_NO_MAPCHANGE );
-			WritePackCell( bombUserIdAndCheckGenerationData, GetClientUserId( iBomber ) );
-			WritePackCell( bombUserIdAndCheckGenerationData, checkGeneration );
+			CreateDataTimer( lateCheckDelay, SecondScan, bombUserIdAndCheckGenerationData, TIMER_FLAG_NO_MAPCHANGE );
+			bombUserIdAndCheckGenerationData.WriteCell( GetClientUserId( iBomber ) );
+			bombUserIdAndCheckGenerationData.WriteCell( checkGeneration );
 		}
 		else //if bomber is lost, find him again (if we want to lateCheck)
 		{
 			ScheduleNextBomberSearch( checkGeneration );
 		}
 	}
+	return Plugin_Continue;
 }
 
 //========== Privates ===========
@@ -343,22 +346,22 @@ public Action:SecondScan( Handle:timer, Handle:bombUserIdAndCheckGenerationData 
 //Give the bomb to the best receiver : alive T other than the old bomber, active in the latest comparison
 //Order : humans before bots, then moving before stationary, then smallest distance to the old bomber
 //return false (and leave the bomb alone) if nobody qualifies
-bool:stripAndGive2ActiveTBomb( any:iOldBomber )
+bool stripAndGive2ActiveTBomb( int iOldBomber )
 {
-	new iEntIndex = GetPlayerWeaponSlot( iOldBomber, CS_SLOT_C4 );
+	int iEntIndex = GetPlayerWeaponSlot( iOldBomber, CS_SLOT_C4 );
 	if ( iEntIndex == -1 )
 		return false;
 
 	//1- Find the best receiver
-	decl Float:oldPos[ 3 ];
+	float oldPos[ 3 ];
 	GetClientAbsOrigin( iOldBomber, oldPos );
 
-	new best = 0;
-	new bool:bestHuman;
-	new bool:bestMoving;
-	new Float:bestDist;
+	int best = 0;
+	bool bestHuman;
+	bool bestMoving;
+	float bestDist;
 
-	for ( new i = 1; i <= MaxClients; ++i )
+	for ( int i = 1; i <= MaxClients; ++i )
 	{
 		if ( i == iOldBomber ||
 				!IsClientInGame( i ) ||
@@ -368,14 +371,14 @@ bool:stripAndGive2ActiveTBomb( any:iOldBomber )
 				g_isAfk[ i ] )
 			continue;
 
-		decl Float:pos[ 3 ];
-		decl Float:velocity[ 3 ];
+		float pos[ 3 ];
+		float velocity[ 3 ];
 		GetClientAbsOrigin( i, pos );
 		GetEntPropVector( i, Prop_Data, "m_vecVelocity", velocity );
 
-		new bool:human = !IsFakeClient( i );
-		new bool:moving = GetVectorLength( velocity ) != 0.0;
-		new Float:dist = GetVectorDistance( oldPos, pos );
+		bool human = !IsFakeClient( i );
+		bool moving = GetVectorLength( velocity ) != 0.0;
+		float dist = GetVectorDistance( oldPos, pos );
 
 		if ( best == 0 ||
 				( human != bestHuman ? human :
@@ -398,10 +401,10 @@ bool:stripAndGive2ActiveTBomb( any:iOldBomber )
 	GivePlayerItem( best, "weapon_c4" );
 
 	//4- Verbose
-	if ( GetConVarInt( g_afkBomb_displayMsg ) == 1 )
+	if ( g_afkBomb_displayMsg.IntValue == 1 )
 	{
 		//Server language for everyone, one message
-		decl String:sGiveMsg[ 256 ];
+		char sGiveMsg[ 256 ];
 		Format( sGiveMsg, sizeof(sGiveMsg), "%T", "StripNGive Bomb", LANG_SERVER, CHAT_GREEN, iOldBomber, CHAT_DEFAULT );
 		PrintToChatAll( "%s[SM] %s%s", CHAT_GREEN, CHAT_DEFAULT, sGiveMsg );
 	}
@@ -411,13 +414,13 @@ bool:stripAndGive2ActiveTBomb( any:iOldBomber )
 
 //The one place the bomb is taken from a player : bDrop = true drops it to the ground, false removes it (to be given away)
 //A bomb that was in hand is replaced by the best weapon, so the hands are never empty; otherwise the weapon in hand stays
-TakeBomb( any:iClient, bool:bDrop )
+void TakeBomb( int iClient, bool bDrop )
 {
-	new iBomb = GetPlayerWeaponSlot( iClient, CS_SLOT_C4 );
+	int iBomb = GetPlayerWeaponSlot( iClient, CS_SLOT_C4 );
 	if ( iBomb == -1 )
 		return;
 
-	new bool:bInHand = ( GetEntPropEnt( iClient, Prop_Send, "m_hActiveWeapon" ) == iBomb );
+	bool bInHand = ( GetEntPropEnt( iClient, Prop_Send, "m_hActiveWeapon" ) == iBomb );
 
 	if ( bDrop )
 	{
@@ -435,14 +438,14 @@ TakeBomb( any:iClient, bool:bDrop )
 
 //Put the first owned weapon of slot 0 (primary), 1 (secondary), 2 (knife) in hand
 //Through the game's own weapon switch (the "use" client command, run by the server), so the client's view model follows
-SwitchToBestWeapon( any:iClient )
+void SwitchToBestWeapon( int iClient )
 {
-	for ( new iSlot = CS_SLOT_PRIMARY; iSlot <= CS_SLOT_KNIFE; ++iSlot )
+	for ( int iSlot = CS_SLOT_PRIMARY; iSlot <= CS_SLOT_KNIFE; ++iSlot )
 	{
-		new iWeapon = GetPlayerWeaponSlot( iClient, iSlot );
+		int iWeapon = GetPlayerWeaponSlot( iClient, iSlot );
 		if ( iWeapon != -1 )
 		{
-			decl String:sClassName[ 32 ];
+			char sClassName[ 32 ];
 			GetEdictClassname( iWeapon, sClassName, sizeof(sClassName) );
 			FakeClientCommand( iClient, "use %s", sClassName );
 			return;
@@ -452,9 +455,9 @@ SwitchToBestWeapon( any:iClient )
 
 //=====State-related
 
-ClearSnapshots()
+void ClearSnapshots()
 {
-	for ( new i = 1; i <= MaxClients; ++i )
+	for ( int i = 1; i <= MaxClients; ++i )
 	{
 		g_snapUserId[ i ] = 0;
 		g_isAfk[ i ] = false;
@@ -462,9 +465,9 @@ ClearSnapshots()
 }
 
 //Record the state of every living terrorist (the afk judgement stays until the next comparison)
-SnapshotAll()
+void SnapshotAll()
 {
-	for ( new i = 1; i <= MaxClients; ++i )
+	for ( int i = 1; i <= MaxClients; ++i )
 	{
 		g_snapUserId[ i ] = 0;
 
@@ -475,7 +478,7 @@ SnapshotAll()
 			g_snapArmor[ i ] = GetClientArmor( i );
 			g_snapButtons[ i ] = GetClientButtons( i );
 
-			for ( new j = CS_SLOT_C4; j >= CS_SLOT_PRIMARY; --j )
+			for ( int j = CS_SLOT_C4; j >= CS_SLOT_PRIMARY; --j )
 				g_snapGuns[ i ][ j ] = GetPlayerWeaponSlot( i, j );
 
 			GetClientEyeAngles( i, g_snapEye[ i ] );
@@ -487,14 +490,14 @@ SnapshotAll()
 }
 
 //Re-judge every snapshotted terrorist : afk if unchanged since its snapshot, otherwise active again
-CompareAll()
+void CompareAll()
 {
-	for ( new i = 1; i <= MaxClients; ++i )
+	for ( int i = 1; i <= MaxClients; ++i )
 		g_isAfk[ i ] = ( g_snapUserId[ i ] != 0 && sameState( i ) );
 }
 
 //true if the client is exactly in the state of its snapshot (nothing done since)
-bool:sameState( any:iClient, bool:ignoreBomb = false )
+bool sameState( int iClient, bool ignoreBomb = false )
 {
 	if ( !IsClientInGame( iClient ) || !IsPlayerAlive( iClient ) || g_snapUserId[ iClient ] != GetClientUserId( iClient ) )
 		return false;
@@ -505,21 +508,21 @@ bool:sameState( any:iClient, bool:ignoreBomb = false )
 		return false;
 
 	//Guns
-	for ( new i = ignoreBomb ? CS_SLOT_C4 - 1 : CS_SLOT_C4; i >= CS_SLOT_PRIMARY; --i )
+	for ( int i = ignoreBomb ? CS_SLOT_C4 - 1 : CS_SLOT_C4; i >= CS_SLOT_PRIMARY; --i )
 		if ( g_snapGuns[ iClient ][ i ] != GetPlayerWeaponSlot( iClient, i ) )
 			return false;
 
 	//Vectors
-	decl Float:eyeVec[ 3 ];
-	decl Float:absAngVec[ 3 ];
-	decl Float:absOriVec[ 3 ];
-	decl Float:absVloVec[ 3 ];
+	float eyeVec[ 3 ];
+	float absAngVec[ 3 ];
+	float absOriVec[ 3 ];
+	float absVloVec[ 3 ];
 	GetClientEyeAngles( iClient, eyeVec );
 	GetClientAbsAngles( iClient, absAngVec );
 	GetClientAbsOrigin( iClient, absOriVec );
 	GetEntPropVector( iClient, Prop_Data, "m_vecVelocity", absVloVec );
 
-	for ( new i = 2; i >= 0; --i )
+	for ( int i = 2; i >= 0; --i )
 		if ( eyeVec[ i ] != g_snapEye[ iClient ][ i ] ||
 				absAngVec[ i ] != g_snapAngle[ iClient ][ i ] ||
 				absOriVec[ i ] != g_snapOrigin[ iClient ][ i ] ||

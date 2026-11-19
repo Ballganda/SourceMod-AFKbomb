@@ -260,21 +260,18 @@ void ScheduleNextBomberSearch( int checkGeneration )
 	}
 }
 
-//Record bomber initial state
+//Record bomber initial state (only caller : CheckForBomber, which has already checked afkbomb >= 1)
 void FirstScan( int iBomber )
 {
-	if ( g_afkBomb.IntValue >= 1 )
-	{
-		//We consider that by default, we're late-checking
-		float timeUntilScan = g_afkBomb_lateCheckDelay.FloatValue;
+	//We consider that by default, we're late-checking
+	float timeUntilScan = g_afkBomb_lateCheckDelay.FloatValue;
 
-		if ( g_firstBombDrop ) //If we're not late-checking
-			timeUntilScan = g_afkBomb.FloatValue;
+	if ( g_firstBombDrop ) //If we're not late-checking
+		timeUntilScan = g_afkBomb.FloatValue;
 
-		SnapshotAll(); //Save the state of every living terrorist
+	SnapshotAll(); //Save the state of every living terrorist
 
-		ScheduleSecondScan( timeUntilScan, iBomber, g_checkGeneration );
-	}
+	ScheduleSecondScan( timeUntilScan, iBomber, g_checkGeneration );
 }
 
 //Judge the bomber in delay seconds; CreateDataTimer creates the pack and frees it with the timer
@@ -320,7 +317,7 @@ public Action SecondScan( Handle timer, DataPack bombUserIdAndCheckGenerationDat
 					return Plugin_Continue; //no latecheck problem are possible so
 				}
 
-				TakeBomb( iBomber, true );
+				TakeBomb( iBomber, GetPlayerWeaponSlot( iBomber, CS_SLOT_C4 ), true );
 
 				if ( g_shouldMsgBombDrop ) //Do not repeat !
 				{
@@ -359,8 +356,8 @@ public Action SecondScan( Handle timer, DataPack bombUserIdAndCheckGenerationDat
 //return false (and leave the bomb alone) if nobody qualifies
 bool StripAndGiveToActiveT( int iOldBomber )
 {
-	int iEntIndex = GetPlayerWeaponSlot( iOldBomber, CS_SLOT_C4 );
-	if ( iEntIndex == -1 )
+	int iBomb = GetPlayerWeaponSlot( iOldBomber, CS_SLOT_C4 );
+	if ( iBomb == -1 )
 		return false;
 
 	//1- Find the best receiver
@@ -406,7 +403,7 @@ bool StripAndGiveToActiveT( int iOldBomber )
 		return false;
 
 	//2- Strip c4
-	TakeBomb( iOldBomber, false );
+	TakeBomb( iOldBomber, iBomb, false );
 
 	//3- Give
 	GivePlayerItem( best, "weapon_c4" );
@@ -424,10 +421,10 @@ bool StripAndGiveToActiveT( int iOldBomber )
 }
 
 //The one place the bomb is taken from a player : bDrop = true drops it to the ground, false removes it (to be given away)
+//iBomb = the player's GetPlayerWeaponSlot( CS_SLOT_C4 ), looked up by the caller; -1 = no bomb, nothing to do
 //A bomb that was in hand is replaced by the best weapon, so the hands are never empty; otherwise the weapon in hand stays
-void TakeBomb( int iClient, bool bDrop )
+void TakeBomb( int iClient, int iBomb, bool bDrop )
 {
-	int iBomb = GetPlayerWeaponSlot( iClient, CS_SLOT_C4 );
 	if ( iBomb == -1 )
 		return;
 
@@ -519,8 +516,9 @@ bool SameState( int iClient, bool ignoreBomb = false )
 		return false;
 
 	//Guns
-	for ( int i = ignoreBomb ? CS_SLOT_GRENADE : CS_SLOT_C4; i >= CS_SLOT_PRIMARY; --i )
-		if ( g_snap[ iClient ].guns[ i ] != GetPlayerWeaponSlot( iClient, i ) )
+	for ( int i = CS_SLOT_C4; i >= CS_SLOT_PRIMARY; --i )
+		if ( !( ignoreBomb && i == CS_SLOT_C4 ) && //ignoreBomb : every slot but the bomb's
+				g_snap[ iClient ].guns[ i ] != GetPlayerWeaponSlot( iClient, i ) )
 			return false;
 
 	//Vectors

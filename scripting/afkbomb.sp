@@ -91,27 +91,27 @@ new g_lateCheckCount;
 public OnPluginStart()
 {
 	//CVARs
-	CreateConVar( "afkbombversion", PLUGIN_VERSION, "Afk Bomb version", FCVAR_PLUGIN | FCVAR_SPONLY | FCVAR_REPLICATED | FCVAR_NOTIFY | FCVAR_DONTRECORD );
+	CreateConVar( "afkbombversion", PLUGIN_VERSION, "Afk Bomb version", FCVAR_SPONLY | FCVAR_REPLICATED | FCVAR_NOTIFY | FCVAR_DONTRECORD );
 
 	g_afkBomb = CreateConVar( "afkbomb", "2", "How long after freezetime ends before the afk drops the bomb, in seconds. 0 = disabled, 1+ = enabled. Def. 2.",
-		FCVAR_PLUGIN | FCVAR_NOTIFY, true, 0.0 );
+		FCVAR_NOTIFY, true, 0.0 );
 	g_afkBomb_addFreeze = CreateConVar( "afkbomb_freezetime", "0", "DEPRECATED since 1.5.1, ignored : checks now always start when freezetime ends. Def. 0.",
-		FCVAR_PLUGIN | FCVAR_NOTIFY, true, 0.0, true, 1.0 );
+		FCVAR_NOTIFY, true, 0.0, true, 1.0 );
 	g_afkBomb_action = CreateConVar( "afkbomb_action", "0",
 	"What to do when someone is considered afk at the beginning of a round. 1=Drop. 0=Give to an active teammate (dropped if there is none). Def. 0.",
-		FCVAR_PLUGIN | FCVAR_NOTIFY, true, 0.0, true, 1.0 );
+		FCVAR_NOTIFY, true, 0.0, true, 1.0 );
 
 	g_afkBomb_displayMsg = CreateConVar( "afkbomb_msg", "1",
 		"Notify team when bomb is dropped (action or latecheckaction = 1) / Notify everyone when bomb is given to an active terrorist (action or latecheckaction = 0). 0 = no, 1 = yes. Def. 1.",
-		FCVAR_PLUGIN | FCVAR_NOTIFY, true, 0.0, true, 1.0 );
+		FCVAR_NOTIFY, true, 0.0, true, 1.0 );
 
 	g_afkBomb_lateCheckNumber = CreateConVar( "afkbomb_latecheck", "2", "Number of latechecks to do before dropping the bomb. 0 = disabled. Def. 2.",
-		FCVAR_PLUGIN | FCVAR_NOTIFY, true, 0.0 );
+		FCVAR_NOTIFY, true, 0.0 );
 	g_afkBomb_lateCheckDelay = CreateConVar( "afkbomb_latecheckdelay", "5.0", "Time between 2 latechecks to drop the bomb, in seconds. Min. 1. Def. 5.",
-		FCVAR_PLUGIN | FCVAR_NOTIFY, true, 1.0 );
+		FCVAR_NOTIFY, true, 1.0 );
 	g_afkBomb_lateCheckAction = CreateConVar( "afkbomb_latecheckaction", "1",
 	"What to do when someone is considered afk after the beginning of a round. 1=Drop. 0=Give to an active teammate, dropped if there is none (not recommended since it could be exploited). Def. 1.",
-		FCVAR_PLUGIN | FCVAR_NOTIFY, true, 0.0, true, 1.0 );
+		FCVAR_NOTIFY, true, 0.0, true, 1.0 );
 
 	//Settings file : every cvar but the version one (applied in OnConfigsExecuted)
 	InstCfg_Add( g_afkBomb );
@@ -195,8 +195,6 @@ public Event_RoundStart( Handle:event, const String:name[], bool:dontBroadcast )
 	g_firstBombDrop = true;
 	ClearSnapshots();
 	g_roundChecked = ( GetConVarInt( g_afkBomb ) >= 1 );
-
-	return bool:Plugin_Handled;
 }
 
 //Bomb planted : advancing the check-generation token invalidates every pending check of this round (the next round_start advances it again)
@@ -439,7 +437,7 @@ TakeBomb( any:iClient, bool:bDrop )
 //Through the game's own weapon switch (the "use" client command, run by the server), so the client's view model follows
 SwitchToBestWeapon( any:iClient )
 {
-	for ( new iSlot = 0; iSlot <= 2; ++iSlot )
+	for ( new iSlot = CS_SLOT_PRIMARY; iSlot <= CS_SLOT_KNIFE; ++iSlot )
 	{
 		new iWeapon = GetPlayerWeaponSlot( iClient, iSlot );
 		if ( iWeapon != -1 )
@@ -477,7 +475,7 @@ SnapshotAll()
 			g_snapArmor[ i ] = GetClientArmor( i );
 			g_snapButtons[ i ] = GetClientButtons( i );
 
-			for ( new j = CS_SLOT_C4; j >= 0; --j )
+			for ( new j = CS_SLOT_C4; j >= CS_SLOT_PRIMARY; --j )
 				g_snapGuns[ i ][ j ] = GetPlayerWeaponSlot( i, j );
 
 			GetClientEyeAngles( i, g_snapEye[ i ] );
@@ -507,7 +505,7 @@ bool:sameState( any:iClient, bool:ignoreBomb = false )
 		return false;
 
 	//Guns
-	for ( new i = ignoreBomb ? CS_SLOT_C4 - 1 : CS_SLOT_C4; i >= 0; --i )
+	for ( new i = ignoreBomb ? CS_SLOT_C4 - 1 : CS_SLOT_C4; i >= CS_SLOT_PRIMARY; --i )
 		if ( g_snapGuns[ iClient ][ i ] != GetPlayerWeaponSlot( iClient, i ) )
 			return false;
 

@@ -51,6 +51,8 @@ if ($Package) {
     Copy-Item "$out\afkbomb.smx" "$sm\plugins"
     Copy-Item "$PSScriptRoot\translations\afkbomb.phrases.txt" "$sm\translations"
     Copy-Item "$src\afkbomb.sp" "$sm\scripting"
+    # GPL v3 text beside the source (not addons/sourcemod/LICENSE.txt, which is SourceMod's own)
+    Copy-Item "$PSScriptRoot\LICENSE" "$sm\scripting\afkbomb-LICENSE.txt"
     # every include afkbomb.sp uses from the submodule, so the zip recompiles on its own
     foreach ($inc in Get-ChildItem $incs -Filter *.inc) {
         if (Select-String -Path "$src\afkbomb.sp" -Pattern "#include\s+<$($inc.BaseName)>" -Quiet) {

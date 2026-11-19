@@ -1,4 +1,19 @@
 /**
+	AFK Bomb
+	Copyright (C) RedSword / Bob Le Ponge (1.0.0 - 1.5.0), BallGanda (1.5.1 and later)
+
+	This program is free software: you can redistribute it and/or modify it under the terms of the
+	GNU General Public License as published by the Free Software Foundation, version 3.
+
+	This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+	even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+	General Public License for more details.
+
+	You should have received a copy of the GNU General Public License along with this program.
+	If not, see <https://www.gnu.org/licenses/>.
+*/
+
+/**
 	Credits :
 	dalto - botdropbomb plugin for drop bomb code
 	http://forums.alliedmods.net/showthread.php?p=523188
@@ -28,7 +43,7 @@
 #include <cstrike>
 #include <instance_config> //settings file in this server's own SourceMod folder (not the shared game cfg folder)
 
-#define PLUGIN_VERSION "1.5.2"
+#define PLUGIN_VERSION "1.5.3"
 
 //Chat colour codes (control characters, written as escapes)
 #define CHAT_DEFAULT "\x01"

@@ -34,6 +34,10 @@
 #define CHAT_DEFAULT "\x01"
 #define CHAT_GREEN "\x04"
 
+//Entity properties read in more than one place
+#define PROP_MONEY "m_iAccount"
+#define PROP_VELOCITY "m_vecVelocity"
+
 public Plugin myinfo =
 {
 	name = "Afk Bomb",
@@ -60,15 +64,19 @@ static int g_checkGeneration = 0;
 
 //State snapshot of every living terrorist, taken when freezetime ends (no per-tick hook)
 //A later comparison with the current state tells whether the player did anything in between
-int g_snapUserId[ MAXPLAYERS + 1 ]; //0 = no snapshot; userid prevents a new player taking a leaver's slot
-int g_snapMoney[ MAXPLAYERS + 1 ];
-int g_snapArmor[ MAXPLAYERS + 1 ];
-int g_snapButtons[ MAXPLAYERS + 1 ];
-int g_snapGuns[ MAXPLAYERS + 1 ][ CS_SLOT_C4 + 1 ]; // GetPlayerWeaponSlot(), slots 0 to CS_SLOT_C4
-float g_snapEye[ MAXPLAYERS + 1 ][ 3 ]; // GetClientEyeAngles()
-float g_snapAngle[ MAXPLAYERS + 1 ][ 3 ]; // GetClientAbsAngles()
-float g_snapOrigin[ MAXPLAYERS + 1 ][ 3 ]; // GetClientAbsOrigin()
-float g_snapVelocity[ MAXPLAYERS + 1 ][ 3 ]; // GetEntPropVector()
+enum struct PlayerSnapshot
+{
+	int userId; //0 = no snapshot; userid prevents a new player taking a leaver's slot
+	int money;
+	int armor;
+	int buttons;
+	int guns[ CS_SLOT_C4 + 1 ]; // GetPlayerWeaponSlot(), CS_SLOT_PRIMARY to CS_SLOT_C4
+	float eye[ 3 ]; // GetClientEyeAngles()
+	float angle[ 3 ]; // GetClientAbsAngles()
+	float origin[ 3 ]; // GetClientAbsOrigin()
+	float velocity[ 3 ]; // GetEntPropVector()
+}
+PlayerSnapshot g_snap[ MAXPLAYERS + 1 ];
 
 //Afk = result of the latest comparison : true = unchanged since the snapshot
 //Every comparison re-judges every snapshotted terrorist. While afk : never a receiver, and cannot pick up the bomb
@@ -165,7 +173,7 @@ public void OnClientPutInServer( int client )
 
 public void OnClientDisconnect( int client )
 {
-	g_snapUserId[ client ] = 0;
+	g_snap[ client ].userId = 0;
 	g_isAfk[ client ] = false;
 }
 
@@ -182,7 +190,7 @@ public Action OnWeaponCanUse( int client, int weapon )
 		return Plugin_Continue;
 
 	//The bomb itself is not activity : the snapshot may hold it while it lies on the ground now
-	if ( sameState( client, true ) )
+	if ( SameState( client, true ) )
 		return Plugin_Handled;
 
 	g_isAfk[ client ] = false;
@@ -265,11 +273,17 @@ void FirstScan( int iBomber )
 
 		SnapshotAll(); //Save the state of every living terrorist
 
-		DataPack bombUserIdAndCheckGenerationData; //CreateDataPack() not needed !!
-		CreateDataTimer( timeUntilScan, SecondScan, bombUserIdAndCheckGenerationData, TIMER_FLAG_NO_MAPCHANGE );
-		bombUserIdAndCheckGenerationData.WriteCell( GetClientUserId( iBomber ) );
-		bombUserIdAndCheckGenerationData.WriteCell( g_checkGeneration );
+		ScheduleSecondScan( timeUntilScan, iBomber, g_checkGeneration );
 	}
+}
+
+//Judge the bomber in delay seconds; CreateDataTimer creates the pack and frees it with the timer
+void ScheduleSecondScan( float delay, int iBomber, int checkGeneration )
+{
+	DataPack bombUserIdAndCheckGenerationData;
+	CreateDataTimer( delay, SecondScan, bombUserIdAndCheckGenerationData, TIMER_FLAG_NO_MAPCHANGE );
+	bombUserIdAndCheckGenerationData.WriteCell( GetClientUserId( iBomber ) );
+	bombUserIdAndCheckGenerationData.WriteCell( checkGeneration );
 }
 
 //Check if bomber's state changed
@@ -300,7 +314,7 @@ public Action SecondScan( Handle timer, DataPack bombUserIdAndCheckGenerationDat
 				//Give to the best active teammate if the action says so; otherwise (or if nobody qualifies) drop
 				if ( ( ( g_firstBombDrop && g_afkBomb_action.IntValue == 0 ) ||
 						( !g_firstBombDrop && g_afkBomb_lateCheckAction.IntValue == 0 ) ) &&
-						stripAndGive2ActiveTBomb( iBomber ) ) //The function takes care of its own verbose
+						StripAndGiveToActiveT( iBomber ) ) //The function takes care of its own verbose
 				{
 					CheckForBomber( null, checkGeneration ); //lets start next check right now
 					return Plugin_Continue; //no latecheck problem are possible so
@@ -327,10 +341,7 @@ public Action SecondScan( Handle timer, DataPack bombUserIdAndCheckGenerationDat
 			//If we're latechecking, we must relaunch timer if the bomber is in the same state
 			//Every interval is judged on its own : a new snapshot of every living terrorist starts it
 			SnapshotAll();
-			//Reusing the datapack
-			CreateDataTimer( lateCheckDelay, SecondScan, bombUserIdAndCheckGenerationData, TIMER_FLAG_NO_MAPCHANGE );
-			bombUserIdAndCheckGenerationData.WriteCell( GetClientUserId( iBomber ) );
-			bombUserIdAndCheckGenerationData.WriteCell( checkGeneration );
+			ScheduleSecondScan( lateCheckDelay, iBomber, checkGeneration ); //a new timer and pack; this timer's pack is freed when it returns
 		}
 		else //if bomber is lost, find him again (if we want to lateCheck)
 		{
@@ -346,7 +357,7 @@ public Action SecondScan( Handle timer, DataPack bombUserIdAndCheckGenerationDat
 //Give the bomb to the best receiver : alive T other than the old bomber, active in the latest comparison
 //Order : humans before bots, then moving before stationary, then smallest distance to the old bomber
 //return false (and leave the bomb alone) if nobody qualifies
-bool stripAndGive2ActiveTBomb( int iOldBomber )
+bool StripAndGiveToActiveT( int iOldBomber )
 {
 	int iEntIndex = GetPlayerWeaponSlot( iOldBomber, CS_SLOT_C4 );
 	if ( iEntIndex == -1 )
@@ -367,14 +378,14 @@ bool stripAndGive2ActiveTBomb( int iOldBomber )
 				!IsClientInGame( i ) ||
 				GetClientTeam( i ) != CS_TEAM_T ||
 				!IsPlayerAlive( i ) ||
-				g_snapUserId[ i ] != GetClientUserId( i ) || //has to have been compared
+				g_snap[ i ].userId != GetClientUserId( i ) || //has to have been compared
 				g_isAfk[ i ] )
 			continue;
 
 		float pos[ 3 ];
 		float velocity[ 3 ];
 		GetClientAbsOrigin( i, pos );
-		GetEntPropVector( i, Prop_Data, "m_vecVelocity", velocity );
+		GetEntPropVector( i, Prop_Data, PROP_VELOCITY, velocity );
 
 		bool human = !IsFakeClient( i );
 		bool moving = GetVectorLength( velocity ) != 0.0;
@@ -436,7 +447,7 @@ void TakeBomb( int iClient, bool bDrop )
 		SwitchToBestWeapon( iClient );
 }
 
-//Put the first owned weapon of slot 0 (primary), 1 (secondary), 2 (knife) in hand
+//Put the first owned weapon of CS_SLOT_PRIMARY, CS_SLOT_SECONDARY, CS_SLOT_KNIFE in hand
 //Through the game's own weapon switch (the "use" client command, run by the server), so the client's view model follows
 void SwitchToBestWeapon( int iClient )
 {
@@ -459,7 +470,7 @@ void ClearSnapshots()
 {
 	for ( int i = 1; i <= MaxClients; ++i )
 	{
-		g_snapUserId[ i ] = 0;
+		g_snap[ i ].userId = 0;
 		g_isAfk[ i ] = false;
 	}
 }
@@ -469,22 +480,22 @@ void SnapshotAll()
 {
 	for ( int i = 1; i <= MaxClients; ++i )
 	{
-		g_snapUserId[ i ] = 0;
+		g_snap[ i ].userId = 0;
 
 		if ( IsClientInGame( i ) && GetClientTeam( i ) == CS_TEAM_T && IsPlayerAlive( i ) )
 		{
-			g_snapUserId[ i ] = GetClientUserId( i );
-			g_snapMoney[ i ] = GetEntProp( i, Prop_Send, "m_iAccount" );
-			g_snapArmor[ i ] = GetClientArmor( i );
-			g_snapButtons[ i ] = GetClientButtons( i );
+			g_snap[ i ].userId = GetClientUserId( i );
+			g_snap[ i ].money = GetEntProp( i, Prop_Send, PROP_MONEY );
+			g_snap[ i ].armor = GetClientArmor( i );
+			g_snap[ i ].buttons = GetClientButtons( i );
 
 			for ( int j = CS_SLOT_C4; j >= CS_SLOT_PRIMARY; --j )
-				g_snapGuns[ i ][ j ] = GetPlayerWeaponSlot( i, j );
+				g_snap[ i ].guns[ j ] = GetPlayerWeaponSlot( i, j );
 
-			GetClientEyeAngles( i, g_snapEye[ i ] );
-			GetClientAbsAngles( i, g_snapAngle[ i ] );
-			GetClientAbsOrigin( i, g_snapOrigin[ i ] );
-			GetEntPropVector( i, Prop_Data, "m_vecVelocity", g_snapVelocity[ i ] );
+			GetClientEyeAngles( i, g_snap[ i ].eye );
+			GetClientAbsAngles( i, g_snap[ i ].angle );
+			GetClientAbsOrigin( i, g_snap[ i ].origin );
+			GetEntPropVector( i, Prop_Data, PROP_VELOCITY, g_snap[ i ].velocity );
 		}
 	}
 }
@@ -493,23 +504,23 @@ void SnapshotAll()
 void CompareAll()
 {
 	for ( int i = 1; i <= MaxClients; ++i )
-		g_isAfk[ i ] = ( g_snapUserId[ i ] != 0 && sameState( i ) );
+		g_isAfk[ i ] = ( g_snap[ i ].userId != 0 && SameState( i ) );
 }
 
 //true if the client is exactly in the state of its snapshot (nothing done since)
-bool sameState( int iClient, bool ignoreBomb = false )
+bool SameState( int iClient, bool ignoreBomb = false )
 {
-	if ( !IsClientInGame( iClient ) || !IsPlayerAlive( iClient ) || g_snapUserId[ iClient ] != GetClientUserId( iClient ) )
+	if ( !IsClientInGame( iClient ) || !IsPlayerAlive( iClient ) || g_snap[ iClient ].userId != GetClientUserId( iClient ) )
 		return false;
 
-	if ( g_snapMoney[ iClient ] != GetEntProp( iClient, Prop_Send, "m_iAccount" ) ||
-			g_snapArmor[ iClient ] != GetClientArmor( iClient ) ||
-			g_snapButtons[ iClient ] != GetClientButtons( iClient ) )
+	if ( g_snap[ iClient ].money != GetEntProp( iClient, Prop_Send, PROP_MONEY ) ||
+			g_snap[ iClient ].armor != GetClientArmor( iClient ) ||
+			g_snap[ iClient ].buttons != GetClientButtons( iClient ) )
 		return false;
 
 	//Guns
-	for ( int i = ignoreBomb ? CS_SLOT_C4 - 1 : CS_SLOT_C4; i >= CS_SLOT_PRIMARY; --i )
-		if ( g_snapGuns[ iClient ][ i ] != GetPlayerWeaponSlot( iClient, i ) )
+	for ( int i = ignoreBomb ? CS_SLOT_GRENADE : CS_SLOT_C4; i >= CS_SLOT_PRIMARY; --i )
+		if ( g_snap[ iClient ].guns[ i ] != GetPlayerWeaponSlot( iClient, i ) )
 			return false;
 
 	//Vectors
@@ -520,13 +531,13 @@ bool sameState( int iClient, bool ignoreBomb = false )
 	GetClientEyeAngles( iClient, eyeVec );
 	GetClientAbsAngles( iClient, absAngVec );
 	GetClientAbsOrigin( iClient, absOriVec );
-	GetEntPropVector( iClient, Prop_Data, "m_vecVelocity", absVloVec );
+	GetEntPropVector( iClient, Prop_Data, PROP_VELOCITY, absVloVec );
 
 	for ( int i = 2; i >= 0; --i )
-		if ( eyeVec[ i ] != g_snapEye[ iClient ][ i ] ||
-				absAngVec[ i ] != g_snapAngle[ iClient ][ i ] ||
-				absOriVec[ i ] != g_snapOrigin[ iClient ][ i ] ||
-				absVloVec[ i ] != g_snapVelocity[ iClient ][ i ] )
+		if ( eyeVec[ i ] != g_snap[ iClient ].eye[ i ] ||
+				absAngVec[ i ] != g_snap[ iClient ].angle[ i ] ||
+				absOriVec[ i ] != g_snap[ iClient ].origin[ i ] ||
+				absVloVec[ i ] != g_snap[ iClient ].velocity[ i ] )
 			return false;
 
 	return true;

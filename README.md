@@ -19,7 +19,7 @@ it next to one if you also want to deal with long-term AFK players.
   extensions, which ship with SourceMod.
 - No gamedata file. Dropping the bomb uses SourceMod's built-in `CS_DropWeapon`.
 
-The original thread reports 1.5.0 working on CS:GO. 1.5.1 has only been tested on CS:S.
+The original thread reports 1.5.0 working on CS:GO. 1.5.1 and 1.5.2 have only been tested on CS:S.
 
 ## Installation
 
@@ -103,6 +103,10 @@ Source rewrite, no behaviour change. No cvar, phrase or config entry was added, 
 
 - `afkbomb.sp` uses the SourcePawn 1.7+ transitional syntax (`#pragma newdecls required`) and compiles with no
   warnings on SourceMod 1.12.
+- Money is read through the named `m_iAccount` property instead of a raw `FindSendPropOffs` offset.
+- The removed `FCVAR_PLUGIN` flag is dropped from every cvar.
+- Weapon slots are named with the `CS_SLOT_*` constants instead of numbers.
+- The per-player AFK snapshot is one `enum struct` instead of nine parallel arrays.
 
 ## Changes in 1.5.1
 

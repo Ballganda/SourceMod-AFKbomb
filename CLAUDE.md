@@ -17,7 +17,8 @@ for Counter-Strike: Source. Goal: verify it still works on the current game buil
 - `test.ps1` — build, deploy, run the suite on a fresh srcds, then scan `afkbomb_tests.log`, SourceMod
   `L*.log`/`errors_*.log` and `console.log` for errors; exit code 0 = clean. `-WithClient` also launches the
   CS:S client so the five real-client cases run; `-InjectError` proves the error detection (must fail);
-  `-ScanOnly` scans the current logs without running anything.
+  `-ScanOnly` scans the current logs without running anything. `-ServerDir` and `-Port` run it on a test slot
+  (set `SOURCEMOD_DIR` to the slot's `addons\sourcemod` so the build deploys there).
 
 ## Test server
 

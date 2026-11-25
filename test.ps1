@@ -13,6 +13,7 @@ param(
     [switch]$WithClient,
     [string]$ClientDir = $(if ($env:CSS_CLIENT_DIR) { $env:CSS_CLIENT_DIR } else { 'C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Source' }),
     [string]$ServerDir = $(if ($env:CSS_SERVER_DIR) { $env:CSS_SERVER_DIR } else { 'C:\Users\user\cssds' }),
+    [int]$Port = 27015,   # game port; SourceTV uses Port+5, the server's client port Port+6
     [string]$Map = 'de_dust2',
     [int]$TimeoutSec = 360
 )
@@ -99,8 +100,9 @@ $warnings = New-Object System.Collections.Generic.List[string]
 $before = $null
 
 if (-not $ScanOnly) {
-    if (Get-Process srcds -ErrorAction SilentlyContinue) {
-        Write-Error 'srcds.exe is already running; stop it first (the suite needs its own server instance).'
+    $ownSrcds = Join-Path (Resolve-Path $ServerDir) 'srcds.exe'
+    if (Get-Process srcds -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $ownSrcds }) {
+        Write-Error "srcds.exe from $ServerDir is already running; stop it first (the suite needs its own server instance)."
         exit 2
     }
     if (-not $NoBuild) {
@@ -118,7 +120,8 @@ if (-not $ScanOnly) {
     $before = Get-LogSizes
     if (Test-Path $clientLog) { $before[$clientLog] = (Get-Item $clientLog).Length }
     $inject = 0; if ($InjectError) { $inject = 1 }
-    $srcdsArgs = "-console -game cstrike -condebug -tickrate 100 +sv_lan 1 +maxplayers 10 +bot_quota 0 " +
+    $srcdsArgs = "-console -game cstrike -condebug -tickrate 100 -port $Port +tv_port $($Port + 5) +clientport $($Port + 6) " +
+                 "+sv_lan 1 +maxplayers 10 +bot_quota 0 " +
                  "+afkbomb_test_autorun 1 +afkbomb_test_inject_error $inject +afkbomb_test_wait_client $([int][bool]$WithClient) +map $Map"
     $junction = Join-Path $game 'afkbomb_client'
     $junctionCreated = $false
@@ -137,8 +140,8 @@ if (-not $ScanOnly) {
             # the game port listens on the LAN IP, not 127.0.0.1
             $ip = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1).IPv4Address.IPAddress
             Start-Sleep -Seconds 20
-            Write-Host "Launching the CS:S client -> ${ip}:27015 (do not touch the game window)..."
-            Start-Process $steamExe -ArgumentList "-applaunch 240 -novid -windowed -w 1024 -h 768 -condebug +connect ${ip}:27015"
+            Write-Host "Launching the CS:S client -> ${ip}:$Port (do not touch the game window)..."
+            Start-Process $steamExe -ArgumentList "-applaunch 240 -novid -windowed -w 1024 -h 768 -condebug +connect ${ip}:$Port"
         }
         if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
             Stop-Process -Id $proc.Id -Force

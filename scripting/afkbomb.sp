@@ -382,7 +382,7 @@ bool StripAndGiveToActiveT( int iOldBomber )
 	int best = 0;
 	bool bestHuman;
 	bool bestMoving;
-	float bestDist;
+	float bestDistSq;
 
 	for ( int i = 1; i <= MaxClients; ++i )
 	{
@@ -400,17 +400,17 @@ bool StripAndGiveToActiveT( int iOldBomber )
 		GetEntPropVector( i, Prop_Data, PROP_VELOCITY, velocity );
 
 		bool human = !IsFakeClient( i );
-		bool moving = GetVectorLength( velocity ) != 0.0;
-		float dist = GetVectorDistance( oldPos, pos );
+		bool moving = velocity[ 0 ] != 0.0 || velocity[ 1 ] != 0.0 || velocity[ 2 ] != 0.0;
+		float distSq = GetVectorDistance( oldPos, pos, true ); //squared : same order, no square root
 
 		if ( best == 0 ||
 				( human != bestHuman ? human :
-					( moving != bestMoving ? moving : dist < bestDist ) ) )
+					( moving != bestMoving ? moving : distSq < bestDistSq ) ) )
 		{
 			best = i;
 			bestHuman = human;
 			bestMoving = moving;
-			bestDist = dist;
+			bestDistSq = distSq;
 		}
 	}
 

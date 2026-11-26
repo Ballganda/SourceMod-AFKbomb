@@ -18,7 +18,8 @@ for Counter-Strike: Source. Goal: verify it still works on the current game buil
   `L*.log`/`errors_*.log` and `console.log` for errors; exit code 0 = clean. `-WithClient` also launches the
   CS:S client so the five real-client cases run; `-InjectError` proves the error detection (must fail);
   `-ScanOnly` scans the current logs without running anything. `-ServerDir` and `-Port` run it on a test slot
-  (set `SOURCEMOD_DIR` to the slot's `addons\sourcemod` so the build deploys there).
+  (set `SOURCEMOD_DIR` to the slot's `addons\sourcemod` so the build deploys there). `-ClientPort` gives the
+  client a free UDP port when another srcds holds 27005.
 
 ## Test server
 

@@ -14,6 +14,7 @@ param(
     [string]$ClientDir = $(if ($env:CSS_CLIENT_DIR) { $env:CSS_CLIENT_DIR } else { 'C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Source' }),
     [string]$ServerDir = $(if ($env:CSS_SERVER_DIR) { $env:CSS_SERVER_DIR } else { 'C:\Users\user\cssds' }),
     [int]$Port = 27015,   # game port; SourceTV uses Port+5, the server's client port Port+6
+    [int]$ClientPort = 27005,   # the CS:S client's own UDP port; pick a free one when another srcds holds 27005
     [string]$Map = 'de_dust2',
     [int]$TimeoutSec = 360
 )
@@ -141,7 +142,7 @@ if (-not $ScanOnly) {
             $ip = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1).IPv4Address.IPAddress
             Start-Sleep -Seconds 20
             Write-Host "Launching the CS:S client -> ${ip}:$Port (do not touch the game window)..."
-            Start-Process $steamExe -ArgumentList "-applaunch 240 -novid -windowed -w 1024 -h 768 -condebug +connect ${ip}:$Port"
+            Start-Process $steamExe -ArgumentList "-applaunch 240 -novid -windowed -w 1024 -h 768 -condebug +clientport $ClientPort +connect ${ip}:$Port"
         }
         if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
             Stop-Process -Id $proc.Id -Force
